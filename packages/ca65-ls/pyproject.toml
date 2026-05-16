@@ -13,7 +13,11 @@ authors = [{ name = "JC-000" }]
 dependencies = [
     "pygls>=1.3.0",
     "tree-sitter>=0.22",
-    # tree-sitter-ca65 is not on PyPI; install from git as a dev dep below
+    "pathspec>=0.12",
+    # tree-sitter-ca65: pogyomo/tree-sitter-ca65 is the live successor to the
+    # 404'd babasbot repo (per docs/research/ts-ca65-coverage.md). Pinned to a
+    # commit, not a branch, so we don't drift.
+    "tree-sitter-ca65 @ git+https://github.com/pogyomo/tree-sitter-ca65@b22ead1",
 ]
 
 [project.optional-dependencies]
@@ -21,11 +25,6 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
-    "pathspec>=0.12",
-    # tree-sitter-ca65: pogyomo/tree-sitter-ca65 is the live successor to the
-    # 404'd babasbot repo (per docs/research/ts-ca65-coverage.md). Pinned to a
-    # commit, not a branch, so M2 doesn't drift.
-    "tree-sitter-ca65 @ git+https://github.com/pogyomo/tree-sitter-ca65@b22ead1",
 ]
 
 [project.scripts]
@@ -34,6 +33,10 @@ ca65-dbg-dump = "ca65_ls.index.dbg_oracle:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ca65_ls"]
+
+[tool.hatch.metadata]
+# tree-sitter-ca65 in [project.optional-dependencies] dev is a direct git URL.
+allow-direct-references = true
 
 [tool.ruff]
 line-length = 100
