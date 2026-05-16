@@ -21,11 +21,11 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
+    "pathspec>=0.12",
     # tree-sitter-ca65: pogyomo/tree-sitter-ca65 is the live successor to the
     # 404'd babasbot repo (per docs/research/ts-ca65-coverage.md). Pinned to a
-    # commit, not a branch, so M2 doesn't drift. The Parser engineer in M2 will
-    # add this back once they've evaluated grammar coverage end-to-end.
-    # "tree-sitter-ca65 @ git+https://github.com/pogyomo/tree-sitter-ca65@b22ead1",
+    # commit, not a branch, so M2 doesn't drift.
+    "tree-sitter-ca65 @ git+https://github.com/pogyomo/tree-sitter-ca65@b22ead1",
 ]
 
 [project.scripts]
