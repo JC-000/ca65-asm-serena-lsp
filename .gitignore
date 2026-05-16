@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 venv/
 .env
+.pytest_cache/
+.ruff_cache/
 
 # Node
 node_modules/
@@ -16,6 +18,9 @@ dist/
 .idea/
 .vscode/
 
+# Serena MCP local state (symlinks into the user's claude-code-rig dir)
+.serena/
+
 # Build artifacts (CA65 toolchain)
 *.o
 *.bin
@@ -23,3 +28,7 @@ dist/
 *.prg
 *.lst
 *.map
+
+# ...but keep committed test fixtures (regenerable via tools/regen_fixtures.sh)
+!packages/ca65-ls/tests/fixtures/**/*.map
+!packages/ca65-ls/tests/fixtures/**/*.lst
