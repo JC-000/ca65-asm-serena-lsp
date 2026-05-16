@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Node
+node_modules/
+dist/
+*.log
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Build artifacts (CA65 toolchain)
+*.o
+*.bin
+*.nes
+*.prg
+*.lst
+*.map
