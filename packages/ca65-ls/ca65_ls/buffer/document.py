@@ -125,7 +125,7 @@ class Document:
       ``edit`` + ``parse(old_tree=...)`` API.
     """
 
-    __slots__ = ("uri", "_text", "_parser", "_tree", "_symbols", "_flat")
+    __slots__ = ("uri", "_text", "_parser", "_tree", "_symbols", "_flat", "_all_refs")
 
     def __init__(self, uri: str, text: str) -> None:
         self.uri = uri
@@ -134,6 +134,7 @@ class Document:
         self._tree: Tree = self._parser.parse(text.encode("utf-8"))
         self._symbols: tuple[BufferSymbol, ...] = ()
         self._flat: tuple[BufferSymbol, ...] = ()
+        self._all_refs: tuple[SymbolReference, ...] | None = None
         self._extract()
 
     # ------------------------------------------------------------------ #
@@ -166,14 +167,33 @@ class Document:
         Anonymous-label references (``:+``/``:-``) are out of scope here;
         the Indexer resolves those numerically against anonymous-label
         positions stored in the BufferSymbol list.
+
+        For collecting references to MANY names at once (e.g. indexing a
+        whole workspace), prefer :meth:`all_references` — it walks the
+        tree once instead of once per name, which is materially faster.
         """
         if not name:
             return []
+        return [r for r in self.all_references() if r.name == name]
+
+    def all_references(self) -> list[SymbolReference]:
+        """Single-pass collection of every identifier reference in the file.
+
+        Returns one :class:`SymbolReference` per identifier-shaped token at
+        a non-defining position.  Cheaper than calling :meth:`references_in`
+        once per name: O(parse_tree) instead of O(parse_tree × names).
+        The Indexer uses this for cold reindex.
+
+        Cached after the first call; invalidated by :meth:`update`.
+        """
+        if self._all_refs is not None:
+            return list(self._all_refs)
         src = self._text.encode("utf-8")
-        refs: list[SymbolReference] = []
         defn_spans = self._definition_spans()
-        self._walk_references(self._tree.root_node, src, name, defn_spans, refs, scope=())
-        return refs
+        out: list[SymbolReference] = []
+        self._walk_all_references(self._tree.root_node, src, defn_spans, out, scope=())
+        self._all_refs = tuple(out)
+        return list(out)
 
     def update(self, new_text: str) -> None:
         """Re-parse with incremental help from the old tree.
@@ -206,6 +226,7 @@ class Document:
         self._tree = self._parser.parse(new_src, self._tree)
         self._symbols = ()
         self._flat = ()
+        self._all_refs = None
         self._extract()
 
     # ------------------------------------------------------------------ #
@@ -900,6 +921,49 @@ class Document:
 
         for c in node.children:
             self._walk_references(c, src, target, defn_spans, out, new_scope)
+
+    def _walk_all_references(
+        self,
+        node: Node,
+        src: bytes,
+        defn_spans: set[tuple[int, int]],
+        out: list[SymbolReference],
+        scope: tuple[str, ...],
+    ) -> None:
+        """Single-pass variant of ``_walk_references`` that emits a record for
+        *every* identifier-shaped reference, not just those matching one
+        target name.  Used by :meth:`all_references` to avoid the O(N) re-walk
+        cost of calling :meth:`references_in` once per name during full
+        workspace indexing.
+        """
+        new_scope = scope
+        if node.type == "pseudo_inst_proc":
+            wrapper = _first_child_of_type(node, "pseudo_inst_proc_symbol")
+            sym = _find_descendant_symbol(wrapper) if wrapper else None
+            if sym is not None:
+                new_scope = scope + (_text(sym, src),)
+        elif node.type == "pseudo_inst_scope":
+            wrapper = _first_child_of_type(node, "pseudo_inst_scope_symbol")
+            sym = _find_descendant_symbol(wrapper) if wrapper else None
+            if sym is not None:
+                new_scope = scope + (_text(sym, src),)
+
+        # Identifier-shaped reference nodes.  Same node-type set as
+        # ``_walk_references``; the only difference is no target-name filter.
+        t = node.type
+        if t == "symbol":
+            if (node.start_byte, node.end_byte) not in defn_spans:
+                name = _text(node, src)
+                out.append(SymbolReference(name=name, uri=self.uri, range=_node_range(node), scope_path=scope))
+        elif t == "local_label_literal":
+            name = _text(node, src)
+            out.append(SymbolReference(name=name, uri=self.uri, range=_node_range(node), scope_path=scope))
+        elif t == "macro_inst_name":
+            name = _text(node, src)
+            out.append(SymbolReference(name=name, uri=self.uri, range=_node_range(node), scope_path=scope))
+
+        for c in node.children:
+            self._walk_all_references(c, src, defn_spans, out, new_scope)
 
     # ------------------------------------------------------------------ #
     # helpers                                                             #

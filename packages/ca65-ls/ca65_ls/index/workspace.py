@@ -69,11 +69,14 @@ _DEFAULT_IGNORES = (
     ".git/",
     ".ca65-ls/",
 )
-CACHE_FORMAT_VERSION = 3  # bump if the on-disk cache shape changes
-# v3 (2026-05-19): cheap-local names now retain the leading "@" prefix
-# (matches the syntactic form in source); semantics of label bodies are
-# extended via _synthesize_label_bodies in the buffer layer.  Caches written
-# by v2 stored stripped names; invalidate.
+CACHE_FORMAT_VERSION = 4  # bump if the on-disk cache shape changes
+# v4 (2026-05-19): references are now collected via a single tree walk per
+# file (Document.all_references) rather than one walk per name; the cached
+# reference list is strictly more comprehensive (includes refs to names not
+# defined in the same file).  Older v3 caches are correct but incomplete;
+# invalidate so cold reindex repopulates with the richer data.
+# v3 (2026-05-19): cheap-local names now retain the leading "@" prefix.
+# v2 (initial): legacy layout.
 
 
 class BufferView(Protocol):
@@ -131,38 +134,18 @@ Parser = Callable[[Path, str], Optional[BufferView]]
 def _default_parser(path: Path, text: str) -> BufferView | None:
     """Real-Document path. Returns None if the Parser layer hasn't landed yet.
 
-    The real `Document.references_in` is keyed by name (returns one symbol's
-    use sites). To gather everything we need for the workspace index we
-    union over all unique names mentioned in the document — flat symbol
-    names plus any name returned by `references_in` for those symbols.
-    For workspace lookups, what matters is that every reference to a
-    name that appears as a symbol somewhere in the workspace gets
-    aggregated; references to names that nobody defines are dead-weight
-    we can defer to M4 (hover-on-unknown).
+    Uses ``Document.all_references()`` for a single tree walk per file
+    rather than one walk per name (which was O(symbols × file_size) and
+    dominated cold-reindex time on real codebases).
     """
     if Document is None:
         return None
     doc = Document(uri=path.as_uri(), text=text)  # type: ignore[call-arg]
     symbols = list(doc.flat_symbols())  # type: ignore[attr-defined]
-    refs: list = []
-    # The real Document has a private `_walk_references` style helper, but
-    # we restrict to the public API: ask for refs of every name that
-    # appears somewhere in flat_symbols (which catches imports, exports,
-    # and definitions). This is enough for cross-file linkage in v1.
-    seen_names: set[str] = set()
-
-    def _add_names(syms: list[BufferSymbol]) -> None:
-        for s in syms:
-            seen_names.add(s.name)
-            if s.children:
-                _add_names(list(s.children))
-
-    _add_names(symbols)
-    for name in seen_names:
-        try:
-            refs.extend(doc.references_in(name))  # type: ignore[attr-defined]
-        except Exception:
-            continue
+    try:
+        refs = list(doc.all_references())  # type: ignore[attr-defined]
+    except Exception:
+        refs = []
     return _BufferViewImpl(_symbols=symbols, _references=refs)
 
 
