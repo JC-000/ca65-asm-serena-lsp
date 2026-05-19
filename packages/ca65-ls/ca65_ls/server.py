@@ -364,6 +364,48 @@ def on_definition(
     return [lsp.Location(uri=ws.uri, range=_to_lsp_range(ws.range)) for ws in defs]
 
 
+_SCOPE_CONTAINER_KINDS = frozenset({
+    SymbolKind.PROC,
+    SymbolKind.SCOPE,
+    SymbolKind.LABEL,   # only counted as a container when range spans >1 line
+})
+
+
+def _enclosing_routine(doc, position: lsp.Position) -> "BufferSymbol | None":
+    """Return the *smallest* routine-like symbol whose body range contains the
+    LSP `position`, or None if the position is at file scope.
+
+    "Routine-like" = ``.proc`` / ``.scope`` / a ``label:`` that gained a
+    multi-line body during the post-process pass.
+    """
+    best = None
+    best_span = None
+    for s in doc.flat_symbols():
+        if s.kind not in _SCOPE_CONTAINER_KINDS:
+            continue
+        # Skip single-line LABELs — they're data labels, not routines.
+        if s.kind == SymbolKind.LABEL and s.range.end.line <= s.range.start.line:
+            continue
+        # Position is inside [start, end] line range (inclusive on end line).
+        if not (s.range.start.line <= position.line <= s.range.end.line):
+            continue
+        span = (s.range.end.line - s.range.start.line, s.range.end.character - s.range.start.character)
+        if best is None or span < best_span:
+            best, best_span = s, span
+    return best
+
+
+def _range_strictly_inside(inner: Range, outer: Range) -> bool:
+    """True iff inner is fully contained in outer AND not equal."""
+    if (inner.start.line, inner.start.character) < (outer.start.line, outer.start.character):
+        return False
+    if (inner.end.line, inner.end.character) > (outer.end.line, outer.end.character):
+        return False
+    if inner == outer:
+        return False
+    return True
+
+
 @server.feature(lsp.TEXT_DOCUMENT_REFERENCES)
 def on_references(
     ls: Ca65LanguageServer, params: lsp.ReferenceParams
@@ -376,8 +418,34 @@ def on_references(
     idx = ls.index_for(uri)
     if idx is None:
         return []
-    refs = idx.references(name)
+
+    # Scope-aware filtering:
+    #   - Cheap locals (`@name`) are always scoped to their parent label's
+    #     body.  Many parents may have an `@loop`; the cursor disambiguates.
+    #   - Plain labels are scoped only if the workspace index says this
+    #     particular name is defined *inside* the enclosing routine (i.e. it
+    #     is a routine-internal jump target, not a global routine entry).
+    #     A top-level routine name (e.g. `hkdf_extract`) is the enclosing
+    #     routine itself and stays global.
+    body_filter: tuple[str, Range] | None = None
+    enclosing = _enclosing_routine(doc, params.position)
+    if enclosing is not None:
+        if name.startswith("@"):
+            body_filter = (uri, _r_to_internal(enclosing.range))
+        else:
+            for ws in idx.lookup(name):
+                if ws.uri == uri and _range_strictly_inside(ws.range, enclosing.range):
+                    body_filter = (uri, _r_to_internal(enclosing.range))
+                    break
+
+    refs = idx.references(name, body_filter=body_filter)
     return [lsp.Location(uri=r.uri, range=_to_lsp_range(r.range)) for r in refs]
+
+
+def _r_to_internal(r: Range) -> Range:
+    """Identity for now; placeholder for any future BufferSymbol-Range vs
+    LSP-Range conversion. Keeps `on_references` readable."""
+    return r
 
 
 # -------------------------------------------------------------------- diagnostics

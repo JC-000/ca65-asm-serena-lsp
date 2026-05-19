@@ -239,6 +239,16 @@ def _scope_matches(reference_scope: tuple[str, ...],
     return reference_scope[: len(symbol_scope)] == symbol_scope
 
 
+def _position_in_range(pos: Position, r: Range) -> bool:
+    """Half-open LSP-style containment: pos is in r iff
+    r.start <= pos < r.end (lexicographic by (line, character))."""
+    if (pos.line, pos.character) < (r.start.line, r.start.character):
+        return False
+    if (pos.line, pos.character) >= (r.end.line, r.end.character):
+        return False
+    return True
+
+
 # ---------------------------------------------------------- dbg-enrichment
 
 
@@ -401,13 +411,28 @@ class WorkspaceIndex:
         self,
         name: str,
         scope_path: tuple[str, ...] | None = None,
+        body_filter: tuple[str, Range] | None = None,
     ) -> list[SymbolReference]:
-        """All references to `name`. If `scope_path` is given, narrow to
-        references whose own scope is inside or equal to that scope."""
+        """All references to ``name``.
+
+        Two filters, AND'd together when both are given:
+
+        :param scope_path: narrow to references whose own ``scope_path`` is
+            inside or equal to this scope (used for ``.proc`` / ``.scope``
+            nested labels).
+        :param body_filter: ``(uri, Range)`` — narrow to references whose
+            position is inside the given range, in the given file.  Used by
+            the LSP server for scope-aware lookups in ``label:``-style code
+            where cheap locals share names across many parent routines.
+        """
         refs = self._references_by_name.get(name, [])
-        if scope_path is None:
-            return list(refs)
-        return [r for r in refs if _scope_matches(r.scope_path, scope_path)]
+        out: list[SymbolReference] = list(refs)
+        if scope_path is not None:
+            out = [r for r in out if _scope_matches(r.scope_path, scope_path)]
+        if body_filter is not None:
+            f_uri, f_range = body_filter
+            out = [r for r in out if r.uri == f_uri and _position_in_range(r.range.start, f_range)]
+        return out
 
     def search(self, query: str, limit: int = 50) -> list[WorkspaceSymbol]:
         """Fuzzy/substring search across symbol names (case-insensitive).

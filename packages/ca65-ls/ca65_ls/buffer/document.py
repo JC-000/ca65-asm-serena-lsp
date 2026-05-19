@@ -871,10 +871,10 @@ class Document:
                         )
                     )
         elif node.type == "local_label_literal":
-            # ``@name`` reference — strip the '@' for comparison.
-            raw = _text(node, src)
-            name = raw[1:] if raw.startswith("@") else raw
-            if name == target:
+            # ``@name`` reference — match against the full @-prefixed name
+            # since we now preserve the '@' in BufferSymbol.name (see
+            # _handle_cheap_local).
+            if _text(node, src) == target:
                 out.append(
                     SymbolReference(
                         name=target,
