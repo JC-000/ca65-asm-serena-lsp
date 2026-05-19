@@ -661,6 +661,140 @@ def _r_to_internal(r: Range) -> Range:
     return r
 
 
+# ----------------------------------------------------------- rename utilities
+
+
+def _is_renameable(name: str) -> bool:
+    """We refuse to rename anonymous labels (`:` / `:+` / `:-`) because their
+    identity is positional, not nominal — there's no name to replace."""
+    return bool(name) and name != ":" and not name.startswith(":")
+
+
+def _compute_rename_scope(
+    ls: Ca65LanguageServer, uri: str, doc, name: str, position: lsp.Position
+) -> Optional[tuple[str, Range]]:
+    """Mirror the scope-aware logic of `on_references` for rename: cheap
+    locals + scope-local labels stay confined to their enclosing routine,
+    top-level names get a global rename.  Returns the body_filter tuple or
+    None if global."""
+    idx = ls.index_for(uri)
+    if idx is None:
+        return None
+    enclosing = _enclosing_routine(doc, position)
+    if enclosing is None:
+        return None
+    if name.startswith("@"):
+        return (uri, enclosing.range)
+    for ws in idx.lookup(name):
+        if ws.uri == uri and _range_strictly_inside(ws.range, enclosing.range):
+            return (uri, enclosing.range)
+    return None
+
+
+@server.feature(lsp.TEXT_DOCUMENT_PREPARE_RENAME)
+def on_prepare_rename(
+    ls: Ca65LanguageServer, params: lsp.PrepareRenameParams
+):
+    """Tell the client up-front whether the symbol at the cursor can be
+    renamed, and which range the new name will replace."""
+    uri = params.text_document.uri
+    doc = ls.doc_or_open(uri)
+    name = _identifier_at(doc.text, params.position)
+    if not name or not _is_renameable(name):
+        return None
+
+    # Compute the exact range of the identifier under the cursor — this is
+    # what the client will offer the user as the "old name" they're editing.
+    lines = doc.text.splitlines()
+    if params.position.line >= len(lines):
+        return None
+    line = lines[params.position.line]
+    import re as _re
+    for m in _re.finditer(r"@?[A-Za-z_][A-Za-z0-9_]*", line):
+        if m.start() <= params.position.character <= m.end():
+            return lsp.PrepareRenamePlaceholder(
+                range=lsp.Range(
+                    start=lsp.Position(line=params.position.line, character=m.start()),
+                    end=lsp.Position(line=params.position.line, character=m.end()),
+                ),
+                placeholder=m.group(0),
+            )
+    return None
+
+
+@server.feature(lsp.TEXT_DOCUMENT_RENAME)
+def on_rename(
+    ls: Ca65LanguageServer, params: lsp.RenameParams
+) -> Optional[lsp.WorkspaceEdit]:
+    """Rename a symbol everywhere it's referenced.
+
+    Scope rules match on_references:
+      - Cheap locals (`@name`): rename within the enclosing routine's body
+        only.  If the new name lacks the `@`, we add it automatically so the
+        user can type just `loop2` and get `@loop2`.
+      - Labels defined inside a `.proc`/`.scope` (scope_path non-empty) or
+        whose body lives strictly inside an enclosing routine: same as cheap
+        locals — scope-confined rename.
+      - Top-level labels / .proc / .scope / .macro / .struct names: global
+        rename across the workspace, hitting the definition, every .import
+        and .export declarator, and every call site.
+      - Anonymous labels (`:`) — refused via on_prepare_rename.
+    """
+    uri = params.text_document.uri
+    doc = ls.doc_or_open(uri)
+    name = _identifier_at(doc.text, params.position)
+    if not name or not _is_renameable(name):
+        return None
+    new_name = params.new_name
+    # Preserve the @ prefix for cheap-local renames; the user can type either form.
+    if name.startswith("@") and not new_name.startswith("@"):
+        new_name = "@" + new_name
+    if not name.startswith("@") and new_name.startswith("@"):
+        # Adding a @ to a non-cheap-local rename would change its kind; refuse.
+        return None
+
+    idx = ls.index_for(uri)
+    if idx is None:
+        return None
+
+    body_filter = _compute_rename_scope(ls, uri, doc, name, params.position)
+
+    # Collect every site to edit: definition selection_ranges + references.
+    edits_by_uri: dict[str, list[lsp.TextEdit]] = {}
+
+    def _add(uri_: str, rng: Range) -> None:
+        edits_by_uri.setdefault(uri_, []).append(
+            lsp.TextEdit(range=_to_lsp_range(rng), new_text=new_name)
+        )
+
+    for ws in idx.lookup(name):
+        # Apply scope filter to definitions, same as references.
+        if body_filter is not None:
+            if ws.uri != body_filter[0]:
+                continue
+            if not _position_in_range_lsp(ws.range.start, body_filter[1]):
+                continue
+        _add(ws.uri, ws.selection_range)
+
+    for ref in idx.references(name, body_filter=body_filter):
+        _add(ref.uri, ref.range)
+
+    if not edits_by_uri:
+        return None
+
+    return lsp.WorkspaceEdit(changes=edits_by_uri)
+
+
+def _position_in_range_lsp(pos, r: Range) -> bool:
+    """Same as the index's _position_in_range, but operates on the (BufferSymbol)
+    Position / Range types directly so we can call it from server-layer code."""
+    if (pos.line, pos.character) < (r.start.line, r.start.character):
+        return False
+    if (pos.line, pos.character) >= (r.end.line, r.end.character):
+        return False
+    return True
+
+
 # -------------------------------------------------------------------- diagnostics
 
 
