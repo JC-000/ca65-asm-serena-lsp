@@ -43,7 +43,7 @@ def test_top_level_proc():
     # _start should contain at least one cheap local (@retry) plus
     # multiple anonymous labels.
     cheap = [c for c in start.children if c.kind == SymbolKind.CHEAP_LOCAL]
-    assert any(c.name == "retry" for c in cheap)
+    assert any(c.name == "@retry" for c in cheap)
 
 
 def test_nested_proc_in_scope():
@@ -67,7 +67,7 @@ def test_cheap_local_parent():
         s
         for s in flat
         if s.kind == SymbolKind.CHEAP_LOCAL
-        and s.name == "inner"
+        and s.name == "@inner"
         and s.scope_path == ("helpers", "foo")
     ]
     assert len(foo_inner) == 1
@@ -78,7 +78,7 @@ def test_cheap_local_parent():
         s
         for s in flat
         if s.kind == SymbolKind.CHEAP_LOCAL
-        and s.name == "inner"
+        and s.name == "@inner"
         and s.scope_path == ("helpers", "bar")
     ]
     assert len(bar_inner) == 1
@@ -233,7 +233,7 @@ def test_flat_includes_children():
     assert "flags" in names
     assert "count" in names
     assert "mac1" in names
-    assert "inner" in names
+    assert "@inner" in names
 
 
 if __name__ == "__main__":

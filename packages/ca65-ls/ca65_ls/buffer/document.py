@@ -631,8 +631,10 @@ class Document:
         body = _first_child_of_type(node, "local_label_body")
         if body is None:
             return
-        raw = _text(body, state.src)  # "@inner"
-        name = raw[1:] if raw.startswith("@") else raw
+        # Keep the leading "@" in the name — preserves the syntactic signal
+        # that this is a cheap local, so client UIs don't conflate it with a
+        # top-level label of the same suffix.
+        name = _text(body, state.src)
         out.append(
             BufferSymbol(
                 name=name,

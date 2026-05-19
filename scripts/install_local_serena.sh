@@ -71,13 +71,20 @@ command -v uvx >/dev/null 2>&1 || { echo "ERROR: install uv (brew install uv)" >
 [[ -d "${CA65_LS_PATH}" ]] || { echo "ERROR: ${CA65_LS_PATH} not found" >&2; exit 1; }
 
 # The JSON describing our forked serena entry.
+#
+# --with-editable (NOT plain --with): editable-installs the local ca65-ls
+# source into uvx's temp environment.  This is critical for dev iteration: a
+# plain --with does a regular pip install and caches the wheel, so changes in
+# packages/ca65-ls/ wouldn't propagate to a running Claude Code session even
+# after restart.  With --with-editable, the env points back at the source dir,
+# so every restart picks up the latest code automatically.
 ENTRY_JSON=$(jq -n \
     --arg fork "${FORK_URL}" \
     --arg ca65 "${CA65_LS_PATH}" \
     '{
         type: "stdio",
         command: "uvx",
-        args: ["--from", $fork, "--with", $ca65, "serena", "start-mcp-server"],
+        args: ["--from", $fork, "--with-editable", $ca65, "serena", "start-mcp-server"],
         env: {}
     }')
 

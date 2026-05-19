@@ -55,8 +55,8 @@ def test_cheap_locals_become_children_of_preceding_label(doc):
     parent_label set."""
     extract_word = _by_name(doc.symbols, "extract_word")
     child_names = [c.name for c in extract_word.children]
-    assert "retry" in child_names, f"expected @retry as child; got {child_names}"
-    assert "done" in child_names, f"expected @done as child; got {child_names}"
+    assert "@retry" in child_names, f"expected @retry as child; got {child_names}"
+    assert "@done" in child_names, f"expected @done as child; got {child_names}"
 
     for c in extract_word.children:
         if c.kind == SymbolKind.CHEAP_LOCAL:
@@ -69,8 +69,8 @@ def test_cheap_locals_are_no_longer_top_level(doc):
     """`@retry` and `@done` should NOT appear at the top level — they live
     only as children of extract_word now."""
     top_names = {s.name for s in doc.symbols}
-    assert "retry" not in top_names, "cheap local leaked to top-level"
-    assert "done" not in top_names, "cheap local leaked to top-level"
+    assert "@retry" not in top_names, "cheap local leaked to top-level"
+    assert "@done" not in top_names, "cheap local leaked to top-level"
 
 
 def test_anonymous_labels_attach_to_preceding_label(doc):

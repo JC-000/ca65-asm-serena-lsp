@@ -50,24 +50,40 @@ log = logging.getLogger("ca65-ls")
 # ---------------------------------------------------------------- LSP <-> our types
 
 
-# Mapping from our CA65-flavored SymbolKind to LSP SymbolKind.
-# (LSP doesn't have macro/scope/cheap_local etc., so we approximate.)
-_LSP_KIND: dict[SymbolKind, lsp.SymbolKind] = {
+# Base mapping from our CA65-flavored SymbolKind to LSP SymbolKind.
+# Plain LABEL is overridden by `_lsp_kind_of()` below because a routine-like
+# label (with absorbed body/children) deserves Function rather than Variable.
+_BASE_LSP_KIND: dict[SymbolKind, lsp.SymbolKind] = {
     SymbolKind.PROC: lsp.SymbolKind.Function,
     SymbolKind.SCOPE: lsp.SymbolKind.Namespace,
     SymbolKind.MACRO: lsp.SymbolKind.Function,
     SymbolKind.STRUCT: lsp.SymbolKind.Struct,
     SymbolKind.UNION: lsp.SymbolKind.Struct,
     SymbolKind.ENUM: lsp.SymbolKind.Enum,
-    SymbolKind.LABEL: lsp.SymbolKind.Variable,
-    SymbolKind.CHEAP_LOCAL: lsp.SymbolKind.Variable,
+    SymbolKind.LABEL: lsp.SymbolKind.Variable,         # overridden below
+    SymbolKind.CHEAP_LOCAL: lsp.SymbolKind.Field,      # distinguishable from siblings
     SymbolKind.ANON_LABEL: lsp.SymbolKind.Variable,
     SymbolKind.CONSTANT: lsp.SymbolKind.Constant,
     SymbolKind.SEGMENT: lsp.SymbolKind.Namespace,
-    SymbolKind.IMPORT: lsp.SymbolKind.Variable,
+    SymbolKind.IMPORT: lsp.SymbolKind.Interface,       # externally defined
     SymbolKind.EXPORT: lsp.SymbolKind.Variable,
     SymbolKind.FIELD: lsp.SymbolKind.Field,
 }
+
+
+def _lsp_kind_of(sym: BufferSymbol | WorkspaceSymbol) -> lsp.SymbolKind:
+    """Map our SymbolKind onto an LSP SymbolKind, with one context-sensitive
+    promotion: a LABEL that gained a body (multi-line range) or has children is
+    a routine; render it as Function. A pure data label stays Variable.
+    """
+    if sym.kind == SymbolKind.LABEL:
+        # WorkspaceSymbol doesn't carry children; BufferSymbol does.  Either a
+        # multi-line range or absorbed children is enough signal that this is
+        # a routine rather than a single-address data label.
+        has_children = bool(getattr(sym, "children", ()))
+        has_body = sym.range.end.line > sym.range.start.line
+        return lsp.SymbolKind.Function if (has_children or has_body) else lsp.SymbolKind.Variable
+    return _BASE_LSP_KIND.get(sym.kind, lsp.SymbolKind.Variable)
 
 
 def _to_lsp_range(r: Range) -> lsp.Range:
@@ -80,7 +96,7 @@ def _to_lsp_range(r: Range) -> lsp.Range:
 def _to_lsp_document_symbol(bs: BufferSymbol) -> lsp.DocumentSymbol:
     return lsp.DocumentSymbol(
         name=bs.name,
-        kind=_LSP_KIND.get(bs.kind, lsp.SymbolKind.Variable),
+        kind=_lsp_kind_of(bs),
         range=_to_lsp_range(bs.range),
         selection_range=_to_lsp_range(bs.selection_range),
         children=[_to_lsp_document_symbol(c) for c in bs.children] or None,
@@ -90,9 +106,54 @@ def _to_lsp_document_symbol(bs: BufferSymbol) -> lsp.DocumentSymbol:
 def _to_lsp_workspace_symbol(ws: WorkspaceSymbol) -> lsp.WorkspaceSymbol:
     return lsp.WorkspaceSymbol(
         name=_qualified_name(ws),
-        kind=_LSP_KIND.get(ws.kind, lsp.SymbolKind.Variable),
+        kind=_lsp_kind_of(ws),
         location=lsp.Location(uri=ws.uri, range=_to_lsp_range(ws.range)),
     )
+
+
+# Symbol kinds that we treat as the "canonical definition" when deduplicating
+# workspace_symbol results — see _dedupe_workspace_symbols.
+_CANONICAL_DEF_KINDS = (
+    SymbolKind.PROC,
+    SymbolKind.SCOPE,
+    SymbolKind.MACRO,
+    SymbolKind.STRUCT,
+    SymbolKind.UNION,
+    SymbolKind.ENUM,
+    SymbolKind.LABEL,
+    SymbolKind.CONSTANT,
+    SymbolKind.FIELD,
+    SymbolKind.CHEAP_LOCAL,
+    SymbolKind.ANON_LABEL,
+    SymbolKind.EXPORT,   # .export name — the declarator IS the def if there's no body
+    SymbolKind.IMPORT,   # .import — last resort, externally defined
+)
+
+
+def _dedupe_workspace_symbols(symbols: list[WorkspaceSymbol]) -> list[WorkspaceSymbol]:
+    """Collapse the (declarator, definition) pairs that ca65 emits.
+
+    For every `.export hkdf_extract` declarator + `hkdf_extract:` label, we
+    return only the canonical definition.  Same name in two different scopes
+    or two different files stays as two entries — we key dedup on
+    (uri, qualified_name) so different files keep distinct hits.
+
+    Ranking: pick the entry whose kind appears earliest in
+    _CANONICAL_DEF_KINDS.  Ties broken by first-seen.
+    """
+    rank = {k: i for i, k in enumerate(_CANONICAL_DEF_KINDS)}
+    best: dict[tuple[str, str], WorkspaceSymbol] = {}
+    order: list[tuple[str, str]] = []
+    for sym in symbols:
+        key = (sym.uri, _qualified_name(sym))
+        prev = best.get(key)
+        if prev is None:
+            best[key] = sym
+            order.append(key)
+        else:
+            if rank.get(sym.kind, len(rank)) < rank.get(prev.kind, len(rank)):
+                best[key] = sym
+    return [best[k] for k in order]
 
 
 def _qualified_name(ws: WorkspaceSymbol) -> str:
@@ -259,10 +320,13 @@ def on_document_symbol(
 def on_workspace_symbol(
     ls: Ca65LanguageServer, params: lsp.WorkspaceSymbolParams
 ) -> list[lsp.WorkspaceSymbol]:
-    out: list[lsp.WorkspaceSymbol] = []
+    # Gather all hits, then collapse (declarator, definition) pairs so the
+    # client doesn't see two entries for every `.export name` / `name:` pair.
+    raw: list[WorkspaceSymbol] = []
     for idx in ls.indexes.values():
-        out.extend(_to_lsp_workspace_symbol(ws) for ws in idx.search(params.query))
-    return out
+        raw.extend(idx.search(params.query))
+    deduped = _dedupe_workspace_symbols(raw)
+    return [_to_lsp_workspace_symbol(ws) for ws in deduped]
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DEFINITION)
