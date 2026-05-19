@@ -21,6 +21,10 @@ dist/
 # Serena MCP local state (symlinks into the user's claude-code-rig dir)
 .serena/
 
+# Claude Code per-repo state (settings, plans, transcripts — managed by
+# the user's claude-code-rig, not source code)
+.claude/
+
 # Build artifacts (CA65 toolchain)
 *.o
 *.bin
