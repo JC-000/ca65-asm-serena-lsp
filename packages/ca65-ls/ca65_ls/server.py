@@ -406,6 +406,152 @@ def _range_strictly_inside(inner: Range, outer: Range) -> bool:
     return True
 
 
+# --------------------------------------------------------------- hover utilities
+
+
+def _doc_comment_above(text: str, line_no: int) -> str:
+    """Walk backwards from `line_no` collecting consecutive comment lines.
+
+    A "comment line" starts (after leading whitespace) with `;`.  Returns the
+    contiguous block ABOVE `line_no` with leading `;` and one optional space
+    stripped, in source order.  Empty string if there's nothing.
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    i = line_no - 1
+    while i >= 0:
+        stripped = lines[i].lstrip()
+        if not stripped.startswith(";"):
+            break
+        # strip ';' and one space; preserve internal formatting
+        cleaned = stripped[1:]
+        if cleaned.startswith(" "):
+            cleaned = cleaned[1:]
+        out.append(cleaned)
+        i -= 1
+    return "\n".join(reversed(out))
+
+
+_HOVER_KIND_LABEL: dict[SymbolKind, str] = {
+    SymbolKind.PROC: "procedure",
+    SymbolKind.SCOPE: "scope",
+    SymbolKind.MACRO: "macro",
+    SymbolKind.STRUCT: "struct",
+    SymbolKind.UNION: "union",
+    SymbolKind.ENUM: "enum",
+    SymbolKind.LABEL: "label",
+    SymbolKind.CHEAP_LOCAL: "cheap local",
+    SymbolKind.ANON_LABEL: "anonymous label",
+    SymbolKind.CONSTANT: "constant",
+    SymbolKind.SEGMENT: "segment",
+    SymbolKind.IMPORT: "imported symbol",
+    SymbolKind.EXPORT: "exported symbol",
+    SymbolKind.FIELD: "field",
+}
+
+
+def _build_hover_markdown(ws: WorkspaceSymbol, doc_text: str | None) -> str:
+    """Render a WorkspaceSymbol as a markdown hover panel.
+
+    Layout:
+      **name**  _(kind)_
+      <scope/parent lines>
+      <address/segment/size when .dbg-enriched>
+      ---
+      <doc-comment block above the definition>
+    """
+    kind_label = _HOVER_KIND_LABEL.get(ws.kind, ws.kind.value)
+    lines = [f"**{ws.name}**  _{kind_label}_"]
+
+    if ws.scope_path:
+        lines.append(f"scope: `{'::'.join(ws.scope_path)}`")
+    if ws.parent_label:
+        lines.append(f"parent: `{ws.parent_label}`")
+
+    if ws.address is not None:
+        addr_str = f"${ws.address:04X}"
+        if ws.segment:
+            addr_str += f" in `{ws.segment}`"
+        if ws.size is not None:
+            addr_str += f" — {ws.size} byte" + ("s" if ws.size != 1 else "")
+        lines.append(addr_str)
+    elif ws.segment:
+        lines.append(f"segment: `{ws.segment}`")
+
+    if doc_text is not None:
+        comment = _doc_comment_above(doc_text, ws.range.start.line)
+        if comment:
+            lines.append("")
+            lines.append("---")
+            lines.append("```ca65")
+            lines.append(comment)
+            lines.append("```")
+
+    return "\n\n".join(lines)
+
+
+@server.feature(lsp.TEXT_DOCUMENT_HOVER)
+def on_hover(
+    ls: Ca65LanguageServer, params: lsp.HoverParams
+) -> Optional[lsp.Hover]:
+    """Return a hover panel for the identifier under the cursor.
+
+    Resolution preference matches `on_definition`: implementation kinds beat
+    declarators.  For cheap locals (`@name`), prefer the candidate whose
+    parent_label matches the cursor's enclosing routine — otherwise the
+    workspace might surface a same-named cheap local from another routine.
+    """
+    uri = params.text_document.uri
+    doc = ls.doc_or_open(uri)
+    name = _identifier_at(doc.text, params.position)
+    if not name:
+        return None
+    idx = ls.index_for(uri)
+    if idx is None:
+        return None
+
+    candidates = idx.lookup(name)
+    if not candidates:
+        return None
+
+    # If the cursor is inside a routine and the symbol is a cheap local, pick
+    # the candidate whose parent_label matches that routine.
+    enclosing = _enclosing_routine(doc, params.position)
+    if enclosing is not None and name.startswith("@"):
+        scoped = [c for c in candidates if c.parent_label == enclosing.name]
+        if scoped:
+            candidates = scoped
+
+    # Otherwise pick the canonical definition (matches on_definition's logic).
+    implementation_kinds = {
+        SymbolKind.PROC, SymbolKind.SCOPE, SymbolKind.MACRO,
+        SymbolKind.STRUCT, SymbolKind.UNION, SymbolKind.ENUM,
+    }
+    label_kinds = {SymbolKind.LABEL, SymbolKind.CHEAP_LOCAL, SymbolKind.CONSTANT}
+    picked = (
+        [c for c in candidates if c.kind in implementation_kinds]
+        or [c for c in candidates if c.kind in label_kinds]
+        or candidates
+    )
+    ws = picked[0]
+
+    # Load the defining file's text for the comment-above lookup. If the
+    # symbol is defined in the open buffer, reuse that to honor unsaved edits.
+    if ws.uri == uri:
+        def_text: str | None = doc.text
+    else:
+        try:
+            def_text = _uri_to_path(ws.uri).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            def_text = None
+
+    contents = lsp.MarkupContent(
+        kind=lsp.MarkupKind.Markdown,
+        value=_build_hover_markdown(ws, def_text),
+    )
+    return lsp.Hover(contents=contents, range=_to_lsp_range(ws.range))
+
+
 @server.feature(lsp.TEXT_DOCUMENT_REFERENCES)
 def on_references(
     ls: Ca65LanguageServer, params: lsp.ReferenceParams
