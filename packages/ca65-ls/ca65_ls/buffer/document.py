@@ -24,7 +24,7 @@ The relevant grammar gaps we cope with here are:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import tree_sitter_ca65 as _ts_ca65
@@ -230,6 +230,15 @@ class Document:
         )
         top: list[BufferSymbol] = []
         self._walk_collect(root, state, top)
+
+        # Post-process: extend each plain LABEL's body range until the next
+        # sibling boundary, and absorb cheap-locals / anonymous-labels that
+        # appear inside that body as children.  This makes ``label:``-style
+        # routines work in find_symbol(include_body=True) and renders nested
+        # outlines for code that doesn't use ``.proc``.
+        src_lines = self._text.splitlines()
+        top = _synthesize_label_bodies(top, src_lines)
+
         self._symbols = tuple(top)
         self._flat = tuple(self._flatten(top))
 
@@ -897,3 +906,124 @@ class Document:
     @staticmethod
     def _current_scope_path(state: _CollectState) -> tuple[str, ...]:
         return tuple(name for name, _is_anchor in state.scope_stack)
+
+
+# ============================================================================ #
+# Post-process: synthesize body ranges for `label:`-style routines.            #
+# ============================================================================ #
+#
+# Reason: ca65 codebases (like the user's c64-https) commonly write routines as
+#
+#     hkdf_extract:
+#             ; ... body ...
+#             rts
+#
+# rather than with ``.proc Name ... .endproc``.  Without help, our tree-sitter
+# pass emits each label as a single-line ``BufferSymbol``, which breaks:
+#   * ``find_symbol(include_body=True)`` — body never spans the routine
+#   * outline-rendering — every cheap local sits at the top level, not nested
+#   * cheap-local ``parent_label`` is correct but invisible in outlines
+#
+# This pass scans the sibling list at each scope level.  For each ``LABEL``
+# symbol it:
+#   1. extends ``range.end`` to the line immediately before the next sibling
+#      *boundary* (next ``LABEL`` / ``.proc`` / ``.scope`` / ``.macro`` / etc.,
+#      or EOF), and
+#   2. absorbs any ``CHEAP_LOCAL`` / ``ANON_LABEL`` siblings that fall inside
+#      the new body range into the label's ``children`` tuple (with their
+#      ``parent_label`` set to the label's name).
+#
+# Plain non-cheap labels are NOT nested under other plain labels — CA65 has no
+# syntactic grouping between sibling labels, so we keep them as siblings.  If
+# the user wants explicit grouping, ``.proc`` does that.
+
+
+_BOUNDARY_KINDS = frozenset({
+    SymbolKind.LABEL,
+    SymbolKind.PROC,
+    SymbolKind.SCOPE,
+    SymbolKind.MACRO,
+    SymbolKind.STRUCT,
+    SymbolKind.UNION,
+    SymbolKind.ENUM,
+    SymbolKind.SEGMENT,
+})
+
+_ABSORBED_KINDS = frozenset({
+    SymbolKind.CHEAP_LOCAL,
+    SymbolKind.ANON_LABEL,
+})
+
+
+def _synthesize_label_bodies(
+    syms: list[BufferSymbol],
+    src_lines: list[str],
+) -> list[BufferSymbol]:
+    """Apply the body-range + cheap-local-absorption pass.
+
+    Recurses into container children (``.proc`` etc.) so label-style routines
+    embedded inside a ``.scope`` get the same treatment.
+    """
+    if not syms:
+        return syms
+
+    # First recurse so nested label-style routines get fixed too.
+    syms = [
+        replace(s, children=tuple(_synthesize_label_bodies(list(s.children), src_lines)))
+        if s.children
+        else s
+        for s in syms
+    ]
+
+    n = len(syms)
+
+    # Pre-compute, for each index i, the smallest j >= i such that syms[j] is
+    # a boundary (or n if none).  A label at index i then has its body extend
+    # up to next_boundary[i + 1] -- the next sibling that ends the routine.
+    # Order matters: we update `last` BEFORE recording so the boundary at i
+    # itself counts.
+    next_boundary: list[int] = [n] * n
+    last = n
+    for i in range(n - 1, -1, -1):
+        if syms[i].kind in _BOUNDARY_KINDS:
+            last = i
+        next_boundary[i] = last
+
+    result: list[BufferSymbol] = []
+    absorbed_indices: set[int] = set()
+
+    for i, s in enumerate(syms):
+        if i in absorbed_indices:
+            continue
+        if s.kind != SymbolKind.LABEL:
+            result.append(s)
+            continue
+
+        nb = next_boundary[i + 1] if (i + 1) < n else n
+
+        # Collect cheap-locals and anonymous-labels between (i, nb).
+        new_children: list[BufferSymbol] = list(s.children)
+        for j in range(i + 1, nb):
+            other = syms[j]
+            if other.kind in _ABSORBED_KINDS:
+                new_children.append(replace(other, parent_label=s.name))
+                absorbed_indices.add(j)
+
+        # Compute the body end position: the end-of-line of the line before
+        # the next boundary, or EOF.
+        start_line = s.range.start.line
+        if nb < n:
+            boundary_line = syms[nb].range.start.line
+            end_line = max(start_line, boundary_line - 1)
+        else:
+            end_line = max(start_line, len(src_lines) - 1)
+
+        end_char = len(src_lines[end_line]) if 0 <= end_line < len(src_lines) else 0
+        new_range = Range(
+            start=s.range.start,
+            end=Position(line=end_line, character=end_char),
+        )
+
+        result.append(replace(s, range=new_range, children=tuple(new_children)))
+
+    return result
