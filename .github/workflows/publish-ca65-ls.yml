@@ -1,0 +1,73 @@
+# Build + publish ca65-ls to PyPI on a `ca65-ls-vX.Y.Z` tag push.
+#
+# Uses PyPI's trusted-publisher OIDC flow — no API token in secrets.
+# Before the first release: register this repository, workflow, and the
+# `release` environment on PyPI under Trusted Publishers for the project.
+# See https://docs.pypi.org/trusted-publishers/.
+#
+# BLOCKER: ca65-ls currently depends on tree-sitter-ca65 via a git URL,
+# which PyPI's package validator rejects.  This workflow will fail on
+# `twine check` until we either (a) wait for upstream to publish
+# tree-sitter-ca65 on PyPI and pin a version, or (b) vendor the grammar
+# into ca65-ls.  See RELEASING.md.
+
+name: Publish ca65-ls to PyPI
+
+on:
+  push:
+    tags:
+      - "ca65-ls-v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "git ref to publish from (defaults to the tag triggering the run)"
+        required: false
+
+jobs:
+  build:
+    name: Build sdist and wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Build distributions
+        working-directory: packages/ca65-ls
+        run: |
+          uv build --sdist --wheel --out-dir ../../dist
+
+      - name: Validate distributions (twine check)
+        run: |
+          uv tool run --with twine twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ca65-ls-dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # PyPI trusted publishing requires the workflow to declare an environment.
+    environment:
+      name: release
+      url: https://pypi.org/project/ca65-ls/
+    permissions:
+      id-token: write   # OIDC
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ca65-ls-dist
+          path: dist/
+
+      - name: Publish to PyPI via trusted-publisher OIDC
+        uses: pypa/gh-action-pypi-publish@release/v1
