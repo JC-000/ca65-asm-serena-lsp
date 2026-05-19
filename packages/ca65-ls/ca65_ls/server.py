@@ -93,19 +93,75 @@ def _to_lsp_range(r: Range) -> lsp.Range:
     )
 
 
-def _to_lsp_document_symbol(bs: BufferSymbol) -> lsp.DocumentSymbol:
+def _build_detail(ws: Optional[WorkspaceSymbol], bs: Optional[BufferSymbol] = None) -> Optional[str]:
+    """Render a short single-line `detail` blurb for a symbol.
+
+    Format examples:
+        "$1234 in CODE"
+        "$0040 zeropage — 2 bytes"
+        "parent: hkdf_extract"          (cheap local without .dbg)
+        "scope: helpers::foo"           (scoped label with no other detail)
+
+    Returns None when there's nothing interesting to say.  This goes into LSP
+    `DocumentSymbol.detail` / `WorkspaceSymbol.containerName`-adjacent fields
+    so MCP clients (Serena, IDE LSPs) can surface it without a separate hover
+    round-trip.
+    """
+    parts: list[str] = []
+    if ws is not None:
+        if ws.address is not None:
+            addr = f"${ws.address:04X}"
+            if ws.segment:
+                if ws.segment.upper() in ("ZEROPAGE", "ZP"):
+                    addr += " zeropage"
+                else:
+                    addr += f" in {ws.segment}"
+            if ws.size is not None:
+                addr += f" — {ws.size} byte" + ("s" if ws.size != 1 else "")
+            parts.append(addr)
+        elif ws.segment:
+            parts.append(ws.segment)
+    src = ws if ws is not None else bs
+    if src is not None:
+        if src.parent_label:
+            parts.append(f"parent: {src.parent_label}")
+        elif src.scope_path:
+            parts.append(f"scope: {'::'.join(src.scope_path)}")
+    return "; ".join(parts) if parts else None
+
+
+def _to_lsp_document_symbol(
+    bs: BufferSymbol, idx_lookup: Optional[dict[tuple[str, tuple[str, ...]], WorkspaceSymbol]] = None
+) -> lsp.DocumentSymbol:
+    """Convert one BufferSymbol to LSP DocumentSymbol.  When `idx_lookup` is
+    supplied, enrich `detail` with workspace-index info (address/segment)."""
+    ws = None
+    if idx_lookup is not None:
+        ws = idx_lookup.get((bs.name, bs.scope_path))
     return lsp.DocumentSymbol(
         name=bs.name,
         kind=_lsp_kind_of(bs),
+        detail=_build_detail(ws, bs),
         range=_to_lsp_range(bs.range),
         selection_range=_to_lsp_range(bs.selection_range),
-        children=[_to_lsp_document_symbol(c) for c in bs.children] or None,
+        children=[_to_lsp_document_symbol(c, idx_lookup) for c in bs.children] or None,
     )
 
 
 def _to_lsp_workspace_symbol(ws: WorkspaceSymbol) -> lsp.WorkspaceSymbol:
+    detail = _build_detail(ws)
+    name = _qualified_name(ws)
+    if detail:
+        # WorkspaceSymbol has no `detail` field in the LSP protocol; surface
+        # the info via `containerName`, which IDEs render alongside the name.
+        return lsp.WorkspaceSymbol(
+            name=name,
+            kind=_lsp_kind_of(ws),
+            location=lsp.Location(uri=ws.uri, range=_to_lsp_range(ws.range)),
+            container_name=detail,
+        )
     return lsp.WorkspaceSymbol(
-        name=_qualified_name(ws),
+        name=name,
         kind=_lsp_kind_of(ws),
         location=lsp.Location(uri=ws.uri, range=_to_lsp_range(ws.range)),
     )
@@ -312,8 +368,19 @@ def on_did_save(ls: Ca65LanguageServer, params: lsp.DidSaveTextDocumentParams) -
 def on_document_symbol(
     ls: Ca65LanguageServer, params: lsp.DocumentSymbolParams
 ) -> list[lsp.DocumentSymbol]:
-    doc = ls.doc_or_open(params.text_document.uri)
-    return [_to_lsp_document_symbol(s) for s in doc.symbols]
+    uri = params.text_document.uri
+    doc = ls.doc_or_open(uri)
+    idx = ls.index_for(uri)
+    idx_lookup: Optional[dict[tuple[str, tuple[str, ...]], WorkspaceSymbol]] = None
+    if idx is not None:
+        # Build a quick (name, scope_path) -> WorkspaceSymbol lookup for THIS
+        # file, so we can attach detail (address/segment/size) without doing
+        # idx.lookup() per symbol.
+        idx_lookup = {}
+        for ws in idx.all_symbols():
+            if ws.uri == uri:
+                idx_lookup[(ws.name, ws.scope_path)] = ws
+    return [_to_lsp_document_symbol(s, idx_lookup) for s in doc.symbols]
 
 
 @server.feature(lsp.WORKSPACE_SYMBOL)
