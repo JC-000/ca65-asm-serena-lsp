@@ -1,0 +1,114 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Canonical sources (read these first)
+
+The README is stale (M0 scoping snapshot). The real project state lives in:
+
+1. **`/Users/someone/.claude/plans/there-are-no-lsp-s-drifting-rain.md`** — the approved implementation plan, with milestones M1–M5, architecture, agent-team plan, and risk register.
+2. **`/Users/someone/.claude/projects/-Users-someone-Documents-ca65-asm-serena-lsp/memory/MEMORY.md`** — auto-memory index pointing to canonical project notes managed by Serena (run `mcp__serena__list_memories` then `mcp__serena__read_memory`).
+3. **`docs/research/ts-ca65-coverage.md`** + **`docs/research/dbg-format.md`** — the Researcher agent's directive-by-directive grammar coverage matrix and `.dbg` format spec. Reference material the Indexer and Parser layers depend on.
+4. **`packages/ca65-ls/docs/m1-spike.md`** — surprises and constraints discovered during M1 (esp. that library archives like `c64.lib` don't contribute sym records to the `.dbg`).
+
+## Two-repo layout
+
+This project spans two checkouts that must stay in sync:
+
+- **`/Users/someone/Documents/ca65-asm-serena-lsp/`** (this repo, GitHub: `JC-000/ca65-asm-serena-lsp`, private) — the standalone `ca65-ls` Python LSP daemon under `packages/ca65-ls/`, plus research docs, scripts, and the approved plan.
+- **`/Users/someone/Documents/serena/`** (GitHub: `JC-000/serena`, fork of `oraios/serena`) — the Serena integration: `Ca65LanguageServer` shim, `Language.CA65` enum entry, factory case, test corpus, and the `test/solidlsp/ca65/test_ca65_basic.py` end-to-end tests. Lives on branch `feature/ca65-language-server` until M5 upstreams it.
+
+When changing the buffer/index/server interfaces, **both repos need updates**: the LSP server's behavior in this repo, and Serena's test assertions in the fork.
+
+## Architecture (3 layers, pinned interface)
+
+```
+   +-----------------+      LSP/JSON-RPC      +---------------------------+
+   |   Serena MCP    |  <------ stdio ------> |   ca65-ls (Python+pygls)  |
+   |  (SolidLS shim) |                        |   server.py                |
+   +-----------------+                        |   |                        |
+                                              |   v                        |
+                                              |  +--------+ +-----------+  |
+                                              |  | Buffer | | Project   |  |
+                                              |  | layer  | | index     |  |
+                                              |  | (TS)   | | (lazy)    |  |
+                                              |  +---+----+ +-----+-----+  |
+                                              +------|-----------|---------+
+                                                  tree-sitter   .dbg/.lbl/
+                                                  -ca65 AST     .map
+                                                  (PRIMARY)     (ENRICHER)
+                                                                ca65 -g
+                                                                (diagnostics)
+```
+
+The three layers were built by parallel agents against a **pinned data contract** in `packages/ca65-ls/ca65_ls/types.py` (`BufferSymbol`, `WorkspaceSymbol`, `SymbolReference`). Treat `types.py` as a stable interface — changing it breaks both the Parser and Indexer in lockstep.
+
+**Key architectural insight (and a correction to the original plan):** tree-sitter-ca65 is the **primary source of truth**, not the cc65 debug info. The `.dbg` file is an opt-in enricher (addresses, segments, archive-symbol provenance) when `ld65 --dbgfile` is set; the LSP degrades gracefully to tree-sitter-only when not. Reason: real CA65 builds (including the user's c64-https) don't pass `--dbgfile` by default. See `packages/ca65-ls/docs/m1-spike.md`.
+
+**Tree-sitter grammar pin:** `pogyomo/tree-sitter-ca65 @ b22ead1`. The earlier `babasbot/tree-sitter-ca65` referenced in pre-M1 research is 404. Five grammar gaps documented in `docs/research/ts-ca65-coverage.md`.
+
+## Commands
+
+All from `packages/ca65-ls/` unless noted. The venv lives at `packages/ca65-ls/.venv/`.
+
+```sh
+# Set up the venv (one-time)
+cd packages/ca65-ls
+uv venv --python 3.12 .venv
+uv pip install -e ".[dev]"
+
+# Run all tests (M1+M2 unit + integration; ~60 tests)
+.venv/bin/python -m pytest -q
+
+# Run a single test file or test
+.venv/bin/python -m pytest tests/test_dbg_oracle.py -v
+.venv/bin/python -m pytest tests/test_workspace_index.py::test_indexes_synthetic_corpus -v
+
+# Regenerate test fixtures (.dbg/.lbl/.map) from the CA65 source corpus
+bash tools/regen_fixtures.sh
+
+# Run the LSP standalone for ad-hoc smoke testing
+.venv/bin/python -m ca65_ls.server --stdio
+# Or: .venv/bin/ca65-ls --stdio
+
+# Dump a .dbg as JSON (debug tool)
+.venv/bin/python -m ca65_ls.index.dbg_oracle path/to/file.dbg [--name SYMBOL]
+```
+
+For the Serena fork's integration tests (M3 onwards):
+
+```sh
+cd /Users/someone/Documents/serena
+.venv/bin/python -m pytest test/solidlsp/ca65/test_ca65_basic.py -v
+```
+
+The fork's venv has both Serena and `ca65-ls` installed editable, so changes in this repo's `packages/ca65-ls/` take effect immediately in Serena's tests.
+
+## Scripts for the user
+
+- `scripts/install_local_serena.sh` — swaps Claude Code's MCP config to use the fork + ca65-ls (with backup + revert instructions). User runs this once, then restarts Claude Code.
+- `scripts/m4_smoke_test.py [PROJECT_PATH]` — exercises the LSP against any CA65 project (default: c64-https) and prints a Markdown-friendly report. Auto-bootstraps into the Serena fork's venv. Use for collecting M4 bug reports.
+
+## Milestone status
+
+- ✅ M1 — `.dbg` oracle (`ca65_ls/index/dbg_oracle.py`)
+- ✅ M2 — MVP LSP daemon: buffer + workspace index + pygls server
+- ✅ M3 — Serena fork wired up; 5/5 e2e tests pass through `request_document_symbols`/`request_definition`/`request_references`
+- 🟡 M4 — validating against c64-https; known issues: cold reindex 13.4s (over 2s budget), references are scope-naive (symbols like `loop`/`done` match across every `.proc`), hover/rename not yet implemented
+- ⏸ M5 — upstream PR to `oraios/serena`
+
+## Gotchas worth knowing
+
+1. **`a`, `x`, `y`, `s` are reserved** in CA65 (6502 register names) — cannot be used as `.struct` field names; ca65 reports a misleading "Invalid storage allocator in struct/union" error. Cost ~10 min of debugging during M1.
+2. **`.export name := $1234` is recorded as `type=lab` in `.dbg`**, not `type=equ`. The semantic difference (label vs equate) is the absence/presence of `seg=N` field. `dbg_oracle.SymbolKind` reflects the raw cc65 type.
+3. **Library archives don't contribute `.dbg` sym records.** KERNAL routines etc. have resolved addresses in `.lbl` and `.map` but no source-line debug info. Falls outside the LSP's source-navigation scope.
+4. **pygls 2.x imports moved** to `pygls.lsp.server.LanguageServer` (not `pygls.server`).
+5. **Stale `.pyc` after parallel-agent edits** can produce confusing `AttributeError` failures that vanish on `find . -name __pycache__ -exec rm -rf {} +`. Worth trying before deeper debugging.
+6. **Serena's root `.gitignore` excludes `build/`** — the fork's committed CA65 fixture `.dbg/.lbl/.map` files live in `test/resources/repos/ca65/test_repo/build/` and need `git add -f`. The per-fixture `.gitignore` keeps `.o`/`.prg` (regenerable) out.
+
+## Conventions
+
+- The fork is on branch `feature/ca65-language-server`; M5 will rebase this onto upstream `main` for the PR.
+- Commits include `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` per the user's git workflow.
+- Test fixtures in `packages/ca65-ls/tests/fixtures/test_repo/` mirror `test/resources/repos/ca65/test_repo/` in the Serena fork. The source files (`src/*.s`, `inc/*.inc`, `cfg/*.cfg`) are authored here; the build artifacts (`build/test_repo.dbg|lbl|map`) are committed snapshots regenerated by `tools/regen_fixtures.sh`.
+- Eight `c64-*` sibling projects under `~/Documents/` are the realism corpus once v1 stabilizes on `c64-https`. Each is a regression test for the indexer.
