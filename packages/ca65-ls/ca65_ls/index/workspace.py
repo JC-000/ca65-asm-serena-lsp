@@ -69,7 +69,11 @@ _DEFAULT_IGNORES = (
     ".git/",
     ".ca65-ls/",
 )
-CACHE_FORMAT_VERSION = 2  # bump if the on-disk cache shape changes
+CACHE_FORMAT_VERSION = 3  # bump if the on-disk cache shape changes
+# v3 (2026-05-19): cheap-local names now retain the leading "@" prefix
+# (matches the syntactic form in source); semantics of label bodies are
+# extended via _synthesize_label_bodies in the buffer layer.  Caches written
+# by v2 stored stripped names; invalidate.
 
 
 class BufferView(Protocol):
