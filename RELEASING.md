@@ -21,11 +21,11 @@ Two ways to get there:
 
 1. Tracking issue:
    [pogyomo/tree-sitter-ca65#1](https://github.com/pogyomo/tree-sitter-ca65/issues/1)
-   — asks the maintainer to publish to PyPI; offers three levels of help
-   (they publish; we contribute a Trusted-Publisher GH Actions workflow;
-   we co-maintain on PyPI under their grant).
-2. When the maintainer publishes (or grants us co-maintainer rights to
-   publish), update `pyproject.toml`'s `tree-sitter-ca65` line:
+   — asks the maintainer to publish to PyPI; offers to help (they publish
+   directly, or we contribute a Trusted-Publisher GH Actions workflow as a
+   PR they can merge).
+2. When the maintainer publishes, update `pyproject.toml`'s
+   `tree-sitter-ca65` line:
      ```toml
      "tree-sitter-ca65>=0.X.Y",  # was: "tree-sitter-ca65 @ git+…@b22ead1"
      ```
