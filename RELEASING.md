@@ -19,11 +19,11 @@ Two ways to get there:
 
 ### Option A (preferred): upstream PyPI publish
 
-1. Open an issue on
-   [pogyomo/tree-sitter-ca65](https://github.com/pogyomo/tree-sitter-ca65)
-   asking for a PyPI release.  Mention this repo and Serena PR
-   [oraios/serena#1504](https://github.com/oraios/serena/pull/1504) so the
-   maintainer can see why it matters.
+1. Tracking issue:
+   [pogyomo/tree-sitter-ca65#1](https://github.com/pogyomo/tree-sitter-ca65/issues/1)
+   — asks the maintainer to publish to PyPI; offers three levels of help
+   (they publish; we contribute a Trusted-Publisher GH Actions workflow;
+   we co-maintain on PyPI under their grant).
 2. When the maintainer publishes (or grants us co-maintainer rights to
    publish), update `pyproject.toml`'s `tree-sitter-ca65` line:
      ```toml
