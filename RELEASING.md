@@ -1,5 +1,10 @@
 # Releasing `ca65-ls`
 
+> **v0.1.0 status:** release content is frozen (CHANGELOG dated 2026-07-20);
+> the `ca65-ls-v0.1.0` tag is intentionally NOT pushed yet because the PyPI
+> trusted publisher is not registered — pushing it now would fail the publish
+> job. Once registered on pypi.org, push the tag and the workflow does the rest.
+
 ## Current state: publishable, first release pending
 
 The former PyPI blocker is **resolved (2026-07-20)**: the `tree-sitter-ca65`
