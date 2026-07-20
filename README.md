@@ -1,20 +1,62 @@
 # ca65-asm-serena-lsp
 
-Exploration repo for building a CA65 assembly language plugin / LSP integration for the [Serena MCP](https://github.com/oraios/serena) toolkit.
+A language server for **CA65 assembly** (the [cc65](https://cc65.github.io/) toolchain's assembler dialect for 6502/65C02/65816 targets — NES, C64, Apple II, Atari), plus the [Serena MCP](https://github.com/oraios/serena) integration that exposes it to coding agents.
 
-## Goal
-
-Give Serena symbolic-code-navigation capabilities (find_symbol, find_referencing_symbols, get_symbols_overview, rename_symbol, etc.) over CA65 assembly source — the dialect used by the [cc65](https://cc65.github.io/) toolchain for 6502/65C02/65816 targets (NES, C64, Apple II, Atari, etc.).
+Gives Serena's symbolic tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `rename_symbol`, hover) real understanding of CA65 source: labels, procs, scopes, macros, structs, imports/exports, and includes.
 
 ## Status
 
-Early scoping. Nothing here yet beyond this README.
+**v1 complete and in daily use.** Validated end-to-end against a real 224-file / ~12k-symbol C64 project (cold reindex ~1.2s, `.dbg` enrichment active).
 
-## Likely shape
+Upstreaming into `oraios/serena` was declined ([oraios/serena#1504](https://github.com/oraios/serena/pull/1504), closed 2026-05-26 as too niche / third-party-dependency risk), so the integration lives permanently in the fork [`JC-000/serena@feature/ca65-language-server`](https://github.com/JC-000/serena/tree/feature/ca65-language-server), kept rebased onto upstream main.
 
-Serena's symbolic tools are powered by language servers. Two plausible directions:
+## Architecture
 
-1. **Wrap an existing CA65 LSP** (if a usable one exists) and register it with Serena's `SolidLanguageServer` layer.
-2. **Build a minimal CA65 language server** ourselves — enough to expose labels, macros, procs, scopes, imports/exports, and includes as LSP symbols. CA65's grammar is small; a Tree-sitter or hand-rolled parser plus an LSP shim is tractable.
+```
+   +-----------------+      LSP/JSON-RPC      +---------------------------+
+   |   Serena MCP    |  <------ stdio ------> |   ca65-ls (Python+pygls)  |
+   |  (SolidLS shim) |                        |   server.py               |
+   +-----------------+                        |   |                       |
+      (fork branch)                           |   v                       |
+                                              |  +--------+ +-----------+ |
+                                              |  | Buffer | | Project   | |
+                                              |  | layer  | | index     | |
+                                              |  | (TS)   | | (lazy)    | |
+                                              |  +---+----+ +-----+-----+ |
+                                              +------|-----------|--------+
+                                                  tree-sitter   .dbg/.lbl/
+                                                  -ca65 AST     .map
+                                                  (PRIMARY)     (ENRICHER)
+```
 
-Decision deferred until we've surveyed prior art.
+- **[tree-sitter-ca65](https://github.com/pogyomo/tree-sitter-ca65)** parses source and is the primary source of truth — the LSP works on any CA65 codebase with no build required.
+- **cc65 debug info** (`.dbg`, when the project links with `ld65 --dbgfile`) is an opt-in enricher: post-link addresses, segment membership, symbol sizes.
+
+## Layout
+
+- `packages/ca65-ls/` — the standalone LSP daemon (Python, pygls). Tests, fixtures, and a `.dbg`-dump debug tool included; see `CLAUDE.md` for dev commands.
+- `scripts/install_local_serena.sh` — points Claude Code's `serena` MCP entry at the fork + this ca65-ls source (project-scoped by default, `--global` optional).
+- `scripts/m4_smoke_test.py [PROJECT]` — exercises the LSP against a real CA65 project and prints a report.
+- `docs/research/` — grammar coverage matrix and `.dbg` format spec.
+
+## Install
+
+```sh
+# one-time: wire Claude Code's serena MCP to the CA65-aware fork
+scripts/install_local_serena.sh            # scoped to one project
+scripts/install_local_serena.sh --global   # or everywhere
+# then restart Claude Code
+```
+
+After the fork branch is updated (e.g. a rebase onto upstream), refresh the cached build:
+
+```sh
+uvx --refresh --from "git+https://github.com/JC-000/serena@feature/ca65-language-server" \
+    --with-editable "$(pwd)/packages/ca65-ls" serena --help
+```
+
+`ca65-ls` itself is installed `--with-editable`, so local source changes take effect on the next MCP restart with no reinstall.
+
+## PyPI
+
+Publishing `ca65-ls` to PyPI is blocked on `tree-sitter-ca65` getting a PyPI release ([pogyomo/tree-sitter-ca65#1](https://github.com/pogyomo/tree-sitter-ca65/issues/1)); the fallback (vendoring the grammar) is documented in `RELEASING.md`.

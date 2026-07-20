@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Canonical sources (read these first)
 
-The README is stale (M0 scoping snapshot). The real project state lives in:
+The README is the public overview (refreshed 2026-07-20). Deeper project state lives in:
 
 1. **`/Users/someone/.claude/plans/there-are-no-lsp-s-drifting-rain.md`** — the approved implementation plan, with milestones M1–M5, architecture, agent-team plan, and risk register.
 2. **`/Users/someone/.claude/projects/-Users-someone-Documents-ca65-asm-serena-lsp/memory/MEMORY.md`** — auto-memory index pointing to canonical project notes managed by Serena (run `mcp__serena__list_memories` then `mcp__serena__read_memory`).
