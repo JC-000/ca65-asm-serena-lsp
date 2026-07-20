@@ -59,4 +59,4 @@ uvx --refresh --from "git+https://github.com/JC-000/serena@feature/ca65-language
 
 ## PyPI
 
-Publishing `ca65-ls` to PyPI is blocked on `tree-sitter-ca65` getting a PyPI release ([pogyomo/tree-sitter-ca65#1](https://github.com/pogyomo/tree-sitter-ca65/issues/1)); the fallback (vendoring the grammar) is documented in `RELEASING.md`.
+The former blocker (a git-URL dependency on `tree-sitter-ca65`, which PyPI rejects) is resolved: the grammar is vendored into `packages/ca65-ls/vendor/tree-sitter-ca65/` (pinned `b22ead1`, MIT — see the NOTICE.md there) and compiled into the wheel as an abi3 C extension. First release procedure: `RELEASING.md`.

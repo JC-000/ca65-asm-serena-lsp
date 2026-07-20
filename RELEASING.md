@@ -1,53 +1,41 @@
 # Releasing `ca65-ls`
 
-## Current state: install-from-git only
+## Current state: publishable, first release pending
 
-`ca65-ls` is **not on PyPI** yet, because its `tree-sitter-ca65` grammar
-dependency is also not on PyPI and PyPI policy rejects packages whose
-dependencies use direct (`git+https://…`) URLs.
+The former PyPI blocker is **resolved (2026-07-20)**: the `tree-sitter-ca65`
+grammar is now **vendored** into `packages/ca65-ls/vendor/tree-sitter-ca65/`
+(pinned upstream commit `b22ead1`, MIT) and compiled into the wheel as the
+abi3 C extension `ca65_ls._grammar._binding`. There are no git-URL
+dependencies left, so PyPI will accept the package. Provenance and the
+update-to-newer-grammar procedure live in
+`packages/ca65-ls/vendor/tree-sitter-ca65/NOTICE.md`.
 
-For now users install from git:
+Until the first release is tagged, users install from git:
 
 ```sh
 pip install "ca65-ls @ git+https://github.com/JC-000/ca65-asm-serena-lsp@main#subdirectory=packages/ca65-ls"
 ```
 
-## Unblocking PyPI publication
+Build notes:
 
-We need `tree-sitter-ca65` available on PyPI before we can publish `ca65-ls`.
-Two ways to get there:
+- Build backend is **setuptools** (`setup.py` defines the extension;
+  metadata stays in `pyproject.toml`). The extension targets the CPython
+  limited API, so each platform needs exactly one `cp310-abi3` wheel that
+  covers Python 3.10+.
+- The publish workflow builds wheels for linux x86_64/aarch64, macOS
+  universal2, and Windows AMD64 via `cibuildwheel`, plus an sdist (which
+  contains the vendored C sources and builds anywhere with a C compiler).
 
-### Option A (preferred): upstream PyPI publish
+### If upstream ever publishes to PyPI (de-vendoring)
 
-1. Tracking issue:
-   [pogyomo/tree-sitter-ca65#1](https://github.com/pogyomo/tree-sitter-ca65/issues/1)
-   — asks the maintainer to publish to PyPI; offers to help (they publish
-   directly, or we contribute a Trusted-Publisher GH Actions workflow as a
-   PR they can merge).
-2. When the maintainer publishes, update `pyproject.toml`'s
-   `tree-sitter-ca65` line:
-     ```toml
-     "tree-sitter-ca65>=0.X.Y",  # was: "tree-sitter-ca65 @ git+…@b22ead1"
-     ```
-   pinned to whatever version corresponds to commit `b22ead1`.
-3. Then proceed to "Publishing to PyPI" below.
-
-### Option B (fallback): vendor the grammar
-
-If upstream PyPI publish doesn't happen on a timeline we like, vendor
-`tree-sitter-ca65`'s grammar source into `packages/ca65-ls/vendor/` and
-build it as part of `ca65-ls`'s own wheel.  Concretely:
-
-1. Copy `grammar.js`, `src/` (the `tree-sitter generate` output — `parser.c`,
-   `tree_sitter/` headers), and `LICENSE` from
-   `pogyomo/tree-sitter-ca65@b22ead1` into `packages/ca65-ls/vendor/`.
-2. Add a `hatch_build.py` (or equivalent) that compiles `parser.c` into a
-   shared library and includes it in the wheel.
-3. Update `ca65_ls/buffer/document.py`'s `_get_language()` to load the
-   vendored library instead of importing the `tree_sitter_ca65` package.
-4. Drop the `tree-sitter-ca65 @ git+…` dependency.
-
-Option B is more work but fully under our control.
+The ask is still open at
+[pogyomo/tree-sitter-ca65#1](https://github.com/pogyomo/tree-sitter-ca65/issues/1).
+If a `tree-sitter-ca65` PyPI release appears and we prefer it: add
+`"tree-sitter-ca65>=0.X.Y"` back to `dependencies`, point
+`ca65_ls/buffer/document.py` back at `import tree_sitter_ca65`, delete
+`vendor/`, `setup.py`, `MANIFEST.in`, and `ca65_ls/_grammar/`, and the
+package becomes pure-Python again (build backend can return to hatchling).
+Not urgent — vendoring is self-sufficient.
 
 ## Publishing to PyPI
 
@@ -62,7 +50,7 @@ Once the dependency is sorted:
      ```
 4. The
    [`publish-ca65-ls.yml`](.github/workflows/publish-ca65-ls.yml) workflow
-   builds the sdist + wheel and publishes via PyPI's
+   builds the sdist + per-platform abi3 wheels (cibuildwheel) and publishes via PyPI's
    [trusted-publisher OIDC flow](https://docs.pypi.org/trusted-publishers/).
    **Before the first release**, register this repo + workflow under
    "Trusted Publishers" on PyPI for the `ca65-ls` project.  No API token

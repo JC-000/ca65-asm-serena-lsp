@@ -2,10 +2,11 @@
 Buffer-layer Document: parses a single CA65 source file with tree-sitter
 and produces a list of :class:`BufferSymbol` records the Indexer can consume.
 
-Grammar: ``pogyomo/tree-sitter-ca65`` pinned at commit ``b22ead1``. Loaded
-via the upstream ``tree_sitter_ca65`` Python package (pip-installable from
-the pinned git ref); the package layout exposes a ``language()`` factory
-that the standard ``tree_sitter`` runtime wraps in a :class:`Language`.
+Grammar: ``pogyomo/tree-sitter-ca65`` pinned at commit ``b22ead1``, vendored
+under ``vendor/tree-sitter-ca65/`` and compiled into this package as
+``ca65_ls._grammar`` (see the NOTICE.md there for provenance and update
+procedure); it exposes the same ``language()`` factory as the upstream
+Python package, which the ``tree_sitter`` runtime wraps in a :class:`Language`.
 
 See ``docs/research/ts-ca65-coverage.md`` for the grammar coverage report.
 The relevant grammar gaps we cope with here are:
@@ -27,8 +28,9 @@ import logging
 from dataclasses import dataclass, replace
 from typing import Optional
 
-import tree_sitter_ca65 as _ts_ca65
 from tree_sitter import Language, Node, Parser, Tree
+
+from ca65_ls import _grammar as _ts_ca65
 
 from ..types import BufferSymbol, Position, Range, SymbolKind, SymbolReference
 
