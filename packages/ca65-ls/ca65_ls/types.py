@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class SymbolKind(str, Enum):
@@ -26,20 +25,20 @@ class SymbolKind(str, Enum):
     here so the parser doesn't have to know about LSP enums.
     """
 
-    PROC = "proc"          # .proc Name ... .endproc
-    SCOPE = "scope"        # .scope Name ... .endscope
-    MACRO = "macro"        # .macro Name ... .endmacro
-    STRUCT = "struct"      # .struct Name ... .endstruct
-    UNION = "union"        # .union Name ... .endunion
-    ENUM = "enum"          # .enum Name ... .endenum
-    LABEL = "label"        # plain top-level / in-scope label
-    CHEAP_LOCAL = "cheap_local"   # @foo: scoped to enclosing non-cheap label
-    ANON_LABEL = "anon_label"     # : (unnamed; addressed by :+ / :-)
+    PROC = "proc"  # .proc Name ... .endproc
+    SCOPE = "scope"  # .scope Name ... .endscope
+    MACRO = "macro"  # .macro Name ... .endmacro
+    STRUCT = "struct"  # .struct Name ... .endstruct
+    UNION = "union"  # .union Name ... .endunion
+    ENUM = "enum"  # .enum Name ... .endenum
+    LABEL = "label"  # plain top-level / in-scope label
+    CHEAP_LOCAL = "cheap_local"  # @foo: scoped to enclosing non-cheap label
+    ANON_LABEL = "anon_label"  # : (unnamed; addressed by :+ / :-)
     CONSTANT = "constant"  # name = expr   or   name := expr
-    SEGMENT = "segment"    # .segment "NAME"
-    IMPORT = "import"      # .import / .importzp
-    EXPORT = "export"      # .export / .exportzp (the declarator, not the target)
-    FIELD = "field"        # member of a .struct / .union
+    SEGMENT = "segment"  # .segment "NAME"
+    IMPORT = "import"  # .import / .importzp
+    EXPORT = "export"  # .export / .exportzp (the declarator, not the target)
+    FIELD = "field"  # member of a .struct / .union
 
 
 @dataclass(frozen=True)
@@ -68,11 +67,11 @@ class BufferSymbol:
 
     name: str
     kind: SymbolKind
-    range: Range                       # the entire span (e.g. .proc..endproc)
-    selection_range: Range             # just the name identifier (for goto-def)
-    scope_path: tuple[str, ...]        # ("helpers", "foo") for helpers::foo
-    parent_label: Optional[str]        # for CHEAP_LOCAL: enclosing non-cheap label
-    children: tuple["BufferSymbol", ...] = ()    # for nested scopes/procs/structs
+    range: Range  # the entire span (e.g. .proc..endproc)
+    selection_range: Range  # just the name identifier (for goto-def)
+    scope_path: tuple[str, ...]  # ("helpers", "foo") for helpers::foo
+    parent_label: str | None  # for CHEAP_LOCAL: enclosing non-cheap label
+    children: tuple[BufferSymbol, ...] = ()  # for nested scopes/procs/structs
 
 
 @dataclass(frozen=True)
@@ -83,15 +82,15 @@ class WorkspaceSymbol:
 
     name: str
     kind: SymbolKind
-    uri: str                           # file:///... of the defining document
+    uri: str  # file:///... of the defining document
     range: Range
     selection_range: Range
     scope_path: tuple[str, ...]
-    parent_label: Optional[str]
+    parent_label: str | None
     # Enrichment from .dbg (populated when a build's debug info is available):
-    address: Optional[int] = None
-    segment: Optional[str] = None      # CODE / BSS / ZEROPAGE / ...
-    size: Optional[int] = None
+    address: int | None = None
+    segment: str | None = None  # CODE / BSS / ZEROPAGE / ...
+    size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -104,5 +103,5 @@ class SymbolReference:
     name: str
     uri: str
     range: Range
-    scope_path: tuple[str, ...]        # scope in which the reference appears,
-                                       # used to disambiguate same-named locals
+    scope_path: tuple[str, ...]  # scope in which the reference appears,
+    # used to disambiguate same-named locals

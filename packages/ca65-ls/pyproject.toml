@@ -47,7 +47,9 @@ Issues = "https://github.com/JC-000/ca65-asm-serena-lsp/issues"
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "ruff>=0.4",
+    # Pinned to a minor range: ruff minor bumps add rules and cause style
+    # drift across the codebase (0.4 -> 0.15 flagged ~50 issues at once).
+    "ruff>=0.15,<0.16",
 ]
 
 [project.scripts]

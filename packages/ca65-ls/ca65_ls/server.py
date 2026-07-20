@@ -26,7 +26,6 @@ import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Iterable, Optional
 from urllib.parse import unquote, urlparse
 
 import lsprotocol.types as lsp
@@ -37,12 +36,10 @@ from ca65_ls.buffer.document import Document
 from ca65_ls.index.workspace import WorkspaceIndex
 from ca65_ls.types import (
     BufferSymbol,
-    Position,
     Range,
     SymbolKind,
     WorkspaceSymbol,
 )
-
 
 log = logging.getLogger("ca65-ls")
 
@@ -60,12 +57,12 @@ _BASE_LSP_KIND: dict[SymbolKind, lsp.SymbolKind] = {
     SymbolKind.STRUCT: lsp.SymbolKind.Struct,
     SymbolKind.UNION: lsp.SymbolKind.Struct,
     SymbolKind.ENUM: lsp.SymbolKind.Enum,
-    SymbolKind.LABEL: lsp.SymbolKind.Variable,         # overridden below
-    SymbolKind.CHEAP_LOCAL: lsp.SymbolKind.Field,      # distinguishable from siblings
+    SymbolKind.LABEL: lsp.SymbolKind.Variable,  # overridden below
+    SymbolKind.CHEAP_LOCAL: lsp.SymbolKind.Field,  # distinguishable from siblings
     SymbolKind.ANON_LABEL: lsp.SymbolKind.Variable,
     SymbolKind.CONSTANT: lsp.SymbolKind.Constant,
     SymbolKind.SEGMENT: lsp.SymbolKind.Namespace,
-    SymbolKind.IMPORT: lsp.SymbolKind.Interface,       # externally defined
+    SymbolKind.IMPORT: lsp.SymbolKind.Interface,  # externally defined
     SymbolKind.EXPORT: lsp.SymbolKind.Variable,
     SymbolKind.FIELD: lsp.SymbolKind.Field,
 }
@@ -93,7 +90,7 @@ def _to_lsp_range(r: Range) -> lsp.Range:
     )
 
 
-def _build_detail(ws: Optional[WorkspaceSymbol], bs: Optional[BufferSymbol] = None) -> Optional[str]:
+def _build_detail(ws: WorkspaceSymbol | None, bs: BufferSymbol | None = None) -> str | None:
     """Render a short single-line `detail` blurb for a symbol.
 
     Format examples:
@@ -131,7 +128,7 @@ def _build_detail(ws: Optional[WorkspaceSymbol], bs: Optional[BufferSymbol] = No
 
 
 def _to_lsp_document_symbol(
-    bs: BufferSymbol, idx_lookup: Optional[dict[tuple[str, tuple[str, ...]], WorkspaceSymbol]] = None
+    bs: BufferSymbol, idx_lookup: dict[tuple[str, tuple[str, ...]], WorkspaceSymbol] | None = None
 ) -> lsp.DocumentSymbol:
     """Convert one BufferSymbol to LSP DocumentSymbol.  When `idx_lookup` is
     supplied, enrich `detail` with workspace-index info (address/segment)."""
@@ -181,8 +178,8 @@ _CANONICAL_DEF_KINDS = (
     SymbolKind.FIELD,
     SymbolKind.CHEAP_LOCAL,
     SymbolKind.ANON_LABEL,
-    SymbolKind.EXPORT,   # .export name — the declarator IS the def if there's no body
-    SymbolKind.IMPORT,   # .import — last resort, externally defined
+    SymbolKind.EXPORT,  # .export name — the declarator IS the def if there's no body
+    SymbolKind.IMPORT,  # .import — last resort, externally defined
 )
 
 
@@ -233,7 +230,7 @@ def _path_to_uri(path: Path) -> str:
 _IDENT_RE = re.compile(r"@?[A-Za-z_][A-Za-z0-9_]*")
 
 
-def _identifier_at(document_text: str, position: lsp.Position) -> Optional[str]:
+def _identifier_at(document_text: str, position: lsp.Position) -> str | None:
     """Extract the CA65 identifier under (line, character), if any."""
     lines = document_text.splitlines()
     if position.line >= len(lines):
@@ -270,13 +267,13 @@ class Ca65LanguageServer(LanguageServer):
             self.workspace_roots.append(root)
         return self.indexes[uri]
 
-    def index_for(self, doc_uri: str) -> Optional[WorkspaceIndex]:
+    def index_for(self, doc_uri: str) -> WorkspaceIndex | None:
         """Pick the workspace index whose root is an ancestor of doc_uri."""
         try:
             doc_path = _uri_to_path(doc_uri).resolve()
         except Exception:
             return None
-        best: Optional[tuple[int, WorkspaceIndex]] = None
+        best: tuple[int, WorkspaceIndex] | None = None
         for root in self.workspace_roots:
             try:
                 doc_path.relative_to(root.resolve())
@@ -371,7 +368,7 @@ def on_document_symbol(
     uri = params.text_document.uri
     doc = ls.doc_or_open(uri)
     idx = ls.index_for(uri)
-    idx_lookup: Optional[dict[tuple[str, tuple[str, ...]], WorkspaceSymbol]] = None
+    idx_lookup: dict[tuple[str, tuple[str, ...]], WorkspaceSymbol] | None = None
     if idx is not None:
         # Build a quick (name, scope_path) -> WorkspaceSymbol lookup for THIS
         # file, so we can attach detail (address/segment/size) without doing
@@ -397,9 +394,7 @@ def on_workspace_symbol(
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DEFINITION)
-def on_definition(
-    ls: Ca65LanguageServer, params: lsp.DefinitionParams
-) -> list[lsp.Location]:
+def on_definition(ls: Ca65LanguageServer, params: lsp.DefinitionParams) -> list[lsp.Location]:
     uri = params.text_document.uri
     doc = ls.doc_or_open(uri)
     name = _identifier_at(doc.text, params.position)
@@ -431,14 +426,16 @@ def on_definition(
     return [lsp.Location(uri=ws.uri, range=_to_lsp_range(ws.range)) for ws in defs]
 
 
-_SCOPE_CONTAINER_KINDS = frozenset({
-    SymbolKind.PROC,
-    SymbolKind.SCOPE,
-    SymbolKind.LABEL,   # only counted as a container when range spans >1 line
-})
+_SCOPE_CONTAINER_KINDS = frozenset(
+    {
+        SymbolKind.PROC,
+        SymbolKind.SCOPE,
+        SymbolKind.LABEL,  # only counted as a container when range spans >1 line
+    }
+)
 
 
-def _enclosing_routine(doc, position: lsp.Position) -> "BufferSymbol | None":
+def _enclosing_routine(doc, position: lsp.Position) -> BufferSymbol | None:
     """Return the *smallest* routine-like symbol whose body range contains the
     LSP `position`, or None if the position is at file scope.
 
@@ -456,7 +453,10 @@ def _enclosing_routine(doc, position: lsp.Position) -> "BufferSymbol | None":
         # Position is inside [start, end] line range (inclusive on end line).
         if not (s.range.start.line <= position.line <= s.range.end.line):
             continue
-        span = (s.range.end.line - s.range.start.line, s.range.end.character - s.range.start.character)
+        span = (
+            s.range.end.line - s.range.start.line,
+            s.range.end.character - s.range.start.character,
+        )
         if best is None or span < best_span:
             best, best_span = s, span
     return best
@@ -468,9 +468,7 @@ def _range_strictly_inside(inner: Range, outer: Range) -> bool:
         return False
     if (inner.end.line, inner.end.character) > (outer.end.line, outer.end.character):
         return False
-    if inner == outer:
-        return False
-    return True
+    return inner != outer
 
 
 # --------------------------------------------------------------- hover utilities
@@ -558,9 +556,7 @@ def _build_hover_markdown(ws: WorkspaceSymbol, doc_text: str | None) -> str:
 
 
 @server.feature(lsp.TEXT_DOCUMENT_HOVER)
-def on_hover(
-    ls: Ca65LanguageServer, params: lsp.HoverParams
-) -> Optional[lsp.Hover]:
+def on_hover(ls: Ca65LanguageServer, params: lsp.HoverParams) -> lsp.Hover | None:
     """Return a hover panel for the identifier under the cursor.
 
     Resolution preference matches `on_definition`: implementation kinds beat
@@ -591,8 +587,12 @@ def on_hover(
 
     # Otherwise pick the canonical definition (matches on_definition's logic).
     implementation_kinds = {
-        SymbolKind.PROC, SymbolKind.SCOPE, SymbolKind.MACRO,
-        SymbolKind.STRUCT, SymbolKind.UNION, SymbolKind.ENUM,
+        SymbolKind.PROC,
+        SymbolKind.SCOPE,
+        SymbolKind.MACRO,
+        SymbolKind.STRUCT,
+        SymbolKind.UNION,
+        SymbolKind.ENUM,
     }
     label_kinds = {SymbolKind.LABEL, SymbolKind.CHEAP_LOCAL, SymbolKind.CONSTANT}
     picked = (
@@ -620,9 +620,7 @@ def on_hover(
 
 
 @server.feature(lsp.TEXT_DOCUMENT_REFERENCES)
-def on_references(
-    ls: Ca65LanguageServer, params: lsp.ReferenceParams
-) -> list[lsp.Location]:
+def on_references(ls: Ca65LanguageServer, params: lsp.ReferenceParams) -> list[lsp.Location]:
     uri = params.text_document.uri
     doc = ls.doc_or_open(uri)
     name = _identifier_at(doc.text, params.position)
@@ -672,7 +670,7 @@ def _is_renameable(name: str) -> bool:
 
 def _compute_rename_scope(
     ls: Ca65LanguageServer, uri: str, doc, name: str, position: lsp.Position
-) -> Optional[tuple[str, Range]]:
+) -> tuple[str, Range] | None:
     """Mirror the scope-aware logic of `on_references` for rename: cheap
     locals + scope-local labels stay confined to their enclosing routine,
     top-level names get a global rename.  Returns the body_filter tuple or
@@ -692,9 +690,7 @@ def _compute_rename_scope(
 
 
 @server.feature(lsp.TEXT_DOCUMENT_PREPARE_RENAME)
-def on_prepare_rename(
-    ls: Ca65LanguageServer, params: lsp.PrepareRenameParams
-):
+def on_prepare_rename(ls: Ca65LanguageServer, params: lsp.PrepareRenameParams):
     """Tell the client up-front whether the symbol at the cursor can be
     renamed, and which range the new name will replace."""
     uri = params.text_document.uri
@@ -710,6 +706,7 @@ def on_prepare_rename(
         return None
     line = lines[params.position.line]
     import re as _re
+
     for m in _re.finditer(r"@?[A-Za-z_][A-Za-z0-9_]*", line):
         if m.start() <= params.position.character <= m.end():
             return lsp.PrepareRenamePlaceholder(
@@ -723,9 +720,7 @@ def on_prepare_rename(
 
 
 @server.feature(lsp.TEXT_DOCUMENT_RENAME)
-def on_rename(
-    ls: Ca65LanguageServer, params: lsp.RenameParams
-) -> Optional[lsp.WorkspaceEdit]:
+def on_rename(ls: Ca65LanguageServer, params: lsp.RenameParams) -> lsp.WorkspaceEdit | None:
     """Rename a symbol everywhere it's referenced.
 
     Scope rules match on_references:
@@ -790,9 +785,7 @@ def _position_in_range_lsp(pos, r: Range) -> bool:
     Position / Range types directly so we can call it from server-layer code."""
     if (pos.line, pos.character) < (r.start.line, r.start.character):
         return False
-    if (pos.line, pos.character) >= (r.end.line, r.end.character):
-        return False
-    return True
+    return not (pos.line, pos.character) >= (r.end.line, r.end.character)
 
 
 # -------------------------------------------------------------------- diagnostics
@@ -854,14 +847,16 @@ def _compute_diagnostics(uri: str) -> list[lsp.Diagnostic]:
 # -------------------------------------------------------------------- entry point
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     import argparse
 
     p = argparse.ArgumentParser(
         prog="ca65-ls",
         description="Language server for CA65 assembly (cc65 toolchain).",
     )
-    p.add_argument("--stdio", action="store_true", default=True, help="LSP over stdin/stdout (default)")
+    p.add_argument(
+        "--stdio", action="store_true", default=True, help="LSP over stdin/stdout (default)"
+    )
     p.add_argument("--log-level", default="INFO", help="DEBUG / INFO / WARNING / ERROR")
     args = p.parse_args(argv)
 

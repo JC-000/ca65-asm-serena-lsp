@@ -28,7 +28,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------- raw parsing
 
 
@@ -40,7 +39,9 @@ def _parse_value(raw: str) -> Any:
     raw = raw.strip()
     if raw.startswith('"') and raw.endswith('"'):
         return raw[1:-1]
-    if "+" in raw and all(part.lstrip("0x").replace("x", "").rstrip().isalnum() for part in raw.split("+")):
+    if "+" in raw and all(
+        part.lstrip("0x").replace("x", "").rstrip().isalnum() for part in raw.split("+")
+    ):
         return [_parse_value(part) for part in raw.split("+")]
     if raw.startswith("0x") or raw.startswith("0X"):
         return int(raw, 16)
@@ -133,10 +134,7 @@ class DbgIndex:
     def all_exports(self) -> list[SymbolRecord]:
         """All symbols defined here that other modules can .import (labels + equs not marked type=imp)."""
         return [
-            rec
-            for recs in self.symbols_by_name.values()
-            for rec in recs
-            if rec.kind != "import"
+            rec for recs in self.symbols_by_name.values() for rec in recs if rec.kind != "import"
         ]
 
 

@@ -17,7 +17,6 @@ import pytest
 from ca65_ls import server as srv
 from ca65_ls.server import Ca65LanguageServer, _identifier_at, _qualified_name
 
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "test_repo"
 DBG_PATH = FIXTURE_DIR / "build" / "test_repo.dbg"
 
@@ -52,9 +51,7 @@ def _open_file(server: Ca65LanguageServer, path: Path) -> str:
     srv.on_did_open(
         server,
         lsp.DidOpenTextDocumentParams(
-            text_document=lsp.TextDocumentItem(
-                uri=uri, language_id="ca65", version=1, text=text
-            )
+            text_document=lsp.TextDocumentItem(uri=uri, language_id="ca65", version=1, text=text)
         ),
     )
     return uri
@@ -114,9 +111,7 @@ def test_document_symbol_main_includes_start_proc(ls):
 
 def test_workspace_symbol_finds_helpers_foo(ls):
     server, root = ls
-    result = srv.on_workspace_symbol(
-        server, lsp.WorkspaceSymbolParams(query="helpers_foo")
-    )
+    result = srv.on_workspace_symbol(server, lsp.WorkspaceSymbolParams(query="helpers_foo"))
     names = [ws.name for ws in result]
     assert "helpers_foo" in names
 
@@ -157,9 +152,7 @@ def test_definition_jumps_to_lib_export(ls):
     pos = _position_of(main, "jsr     lib_export", "lib_export")
     result = srv.on_definition(
         server,
-        lsp.DefinitionParams(
-            text_document=lsp.TextDocumentIdentifier(uri=uri), position=pos
-        ),
+        lsp.DefinitionParams(text_document=lsp.TextDocumentIdentifier(uri=uri), position=pos),
     )
     assert len(result) == 1
     assert result[0].uri.endswith("src/lib.s")
@@ -206,7 +199,9 @@ def test_references_finds_lib_export_use_site(ls):
 
 
 def test_qualified_name_no_scope():
-    from ca65_ls.types import Range as R, Position as P, SymbolKind, WorkspaceSymbol
+    from ca65_ls.types import Position as P
+    from ca65_ls.types import Range as R
+    from ca65_ls.types import SymbolKind, WorkspaceSymbol
 
     ws = WorkspaceSymbol(
         name="foo",
@@ -221,7 +216,9 @@ def test_qualified_name_no_scope():
 
 
 def test_qualified_name_with_scope():
-    from ca65_ls.types import Range as R, Position as P, SymbolKind, WorkspaceSymbol
+    from ca65_ls.types import Position as P
+    from ca65_ls.types import Range as R
+    from ca65_ls.types import SymbolKind, WorkspaceSymbol
 
     ws = WorkspaceSymbol(
         name="foo",

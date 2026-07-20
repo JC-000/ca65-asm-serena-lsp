@@ -15,8 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from ca65_ls.index.dbg_oracle import SymbolRecord, build_index, load, parse_dbg
-
+from ca65_ls.index.dbg_oracle import SymbolRecord, load
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "test_repo"
 DBG_PATH = FIXTURE_DIR / "build" / "test_repo.dbg"
@@ -25,9 +24,7 @@ DBG_PATH = FIXTURE_DIR / "build" / "test_repo.dbg"
 @pytest.fixture(scope="module")
 def index():
     if not DBG_PATH.exists():
-        pytest.skip(
-            f"{DBG_PATH} not built; run tools/regen_fixtures.sh first."
-        )
+        pytest.skip(f"{DBG_PATH} not built; run tools/regen_fixtures.sh first.")
     return load(DBG_PATH)
 
 

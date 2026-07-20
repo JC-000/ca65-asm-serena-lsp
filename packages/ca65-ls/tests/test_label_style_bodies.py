@@ -15,7 +15,6 @@ import pytest
 from ca65_ls.buffer.document import Document
 from ca65_ls.types import SymbolKind
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "test_repo" / "src" / "label_style.s"
 
 

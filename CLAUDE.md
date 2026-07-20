@@ -57,7 +57,7 @@ cd packages/ca65-ls
 uv venv --python 3.12 .venv
 uv pip install -e ".[dev]"
 
-# Run all tests (M1+M2 unit + integration; ~60 tests)
+# Run all tests (85 tests)
 .venv/bin/python -m pytest -q
 
 # Run a single test file or test

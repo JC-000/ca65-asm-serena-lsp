@@ -42,7 +42,8 @@ Not urgent — vendoring is self-sufficient.
 Once the dependency is sorted:
 
 1. Bump `version` in `packages/ca65-ls/pyproject.toml`.
-2. Update `CHANGELOG.md` (TBD — add one if absent) with the release notes.
+2. Update `packages/ca65-ls/CHANGELOG.md` with the release notes (move the
+   "unreleased" heading to the version/date).
 3. Commit, then create a tag matching the format `ca65-ls-vX.Y.Z`:
      ```sh
      git tag -a ca65-ls-v0.1.0 -m "ca65-ls v0.1.0"

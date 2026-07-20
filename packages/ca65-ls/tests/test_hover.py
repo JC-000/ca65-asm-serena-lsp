@@ -9,8 +9,7 @@ import lsprotocol.types as lsp
 import pytest
 
 from ca65_ls import server as srv
-from ca65_ls.server import Ca65LanguageServer, _build_hover_markdown, _doc_comment_above
-
+from ca65_ls.server import Ca65LanguageServer, _doc_comment_above
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "test_repo"
 
@@ -29,7 +28,9 @@ def _open(server: Ca65LanguageServer, path: Path) -> str:
     srv.on_did_open(
         server,
         lsp.DidOpenTextDocumentParams(
-            text_document=lsp.TextDocumentItem(uri=uri, language_id="ca65", version=1, text=path.read_text())
+            text_document=lsp.TextDocumentItem(
+                uri=uri, language_id="ca65", version=1, text=path.read_text()
+            )
         ),
     )
     return uri
@@ -91,7 +92,9 @@ def test_hover_on_lib_export_includes_kind_and_address(ls):
     assert h is not None
     md = h.contents.value
     assert "**lib_export**" in md
-    assert "procedure" in md or "label" in md  # depending on whether parse landed on .proc or absorbed label
+    assert (
+        "procedure" in md or "label" in md
+    )  # depending on whether parse landed on .proc or absorbed label
     # .dbg fixture has lib_export with an address; should appear
     assert "$" in md  # the "$1234"-style address line
 

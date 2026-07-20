@@ -17,7 +17,6 @@ import pytest
 from ca65_ls import server as srv
 from ca65_ls.server import Ca65LanguageServer
 
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "test_repo"
 
 
@@ -35,7 +34,9 @@ def _open(server: Ca65LanguageServer, path: Path) -> str:
     srv.on_did_open(
         server,
         lsp.DidOpenTextDocumentParams(
-            text_document=lsp.TextDocumentItem(uri=uri, language_id="ca65", version=1, text=path.read_text())
+            text_document=lsp.TextDocumentItem(
+                uri=uri, language_id="ca65", version=1, text=path.read_text()
+            )
         ),
     )
     return uri
@@ -66,7 +67,9 @@ def test_cheap_local_refs_scoped_to_parent(ls):
     files_and_lines = sorted(refs)
     # routine_a's @loop is referenced at line 22 (the `bne @loop`).
     # routine_b's @loop reference at line 34 must NOT be in the result.
-    assert ("same_name_locals.s", 22) in refs, f"expected routine_a's @loop ref; got {files_and_lines}"
+    assert ("same_name_locals.s", 22) in refs, (
+        f"expected routine_a's @loop ref; got {files_and_lines}"
+    )
     assert not any(line == 34 for _, line in refs), (
         f"routine_b's @loop ref should NOT appear; got {files_and_lines}"
     )
@@ -81,7 +84,9 @@ def test_cheap_local_refs_in_other_routine_disjoint(ls):
     # routine_b's @loop declaration is at line 29.
     refs = _refs_at(server, uri, 29, 1)
     files_and_lines = sorted(refs)
-    assert ("same_name_locals.s", 34) in refs, f"expected routine_b's @loop ref; got {files_and_lines}"
+    assert ("same_name_locals.s", 34) in refs, (
+        f"expected routine_b's @loop ref; got {files_and_lines}"
+    )
     assert not any(line == 22 for _, line in refs), (
         f"routine_a's @loop ref should NOT appear; got {files_and_lines}"
     )
@@ -113,7 +118,9 @@ def test_proc_scope_local_label_refs_stay_in_proc(ls):
     # Read the file to figure out line numbers dynamically (helpers.s evolves).
     text = f.read_text()
     inner_lines = [i for i, line in enumerate(text.splitlines()) if line.startswith("@inner")]
-    assert len(inner_lines) == 2, f"helpers.s should have exactly two @inner declarations; got {inner_lines}"
+    assert len(inner_lines) == 2, (
+        f"helpers.s should have exactly two @inner declarations; got {inner_lines}"
+    )
 
     foo_inner_line, bar_inner_line = inner_lines
 

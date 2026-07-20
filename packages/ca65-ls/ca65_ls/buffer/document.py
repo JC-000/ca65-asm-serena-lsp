@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
-from typing import Optional
 
 from tree_sitter import Language, Node, Parser, Tree
 
@@ -39,7 +38,7 @@ _log = logging.getLogger(__name__)
 
 # --- single shared Language / Parser ------------------------------------- #
 
-_LANGUAGE: Optional[Language] = None
+_LANGUAGE: Language | None = None
 
 
 def _get_language() -> Language:
@@ -69,14 +68,14 @@ def _text(node: Node, src: bytes) -> str:
     return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
 
-def _first_child_of_type(node: Node, type_name: str) -> Optional[Node]:
+def _first_child_of_type(node: Node, type_name: str) -> Node | None:
     for c in node.children:
         if c.type == type_name:
             return c
     return None
 
 
-def _find_descendant_symbol(node: Node) -> Optional[Node]:
+def _find_descendant_symbol(node: Node) -> Node | None:
     """Return the first ``symbol`` descendant — used for nodes whose
     grammar shape is ``wrapper(symbol)`` (e.g. ``pseudo_inst_proc_symbol``).
     """
@@ -111,7 +110,7 @@ class _CollectState:
     scope_stack: list[tuple[str, bool]]
     # Current enclosing non-cheap label name (for ``parent_label`` on
     # cheap locals).  None at top level.
-    parent_label: Optional[str]
+    parent_label: str | None
 
 
 class Document:
@@ -369,19 +368,33 @@ class Document:
             "pseudo_inst_import",
             "pseudo_inst_importzp",
         ):
-            self._handle_import_export(node, state, out, kind=SymbolKind.IMPORT,
-                                       symbol_child_type=("pseudo_inst_import_symbol"
-                                                          if node_type == "pseudo_inst_import"
-                                                          else "pseudo_inst_importzp_symbol"))
+            self._handle_import_export(
+                node,
+                state,
+                out,
+                kind=SymbolKind.IMPORT,
+                symbol_child_type=(
+                    "pseudo_inst_import_symbol"
+                    if node_type == "pseudo_inst_import"
+                    else "pseudo_inst_importzp_symbol"
+                ),
+            )
             return
         if node_type in (
             "pseudo_inst_export",
             "pseudo_inst_exportzp",
         ):
-            self._handle_import_export(node, state, out, kind=SymbolKind.EXPORT,
-                                       symbol_child_type=("pseudo_inst_export_symbol"
-                                                          if node_type == "pseudo_inst_export"
-                                                          else "pseudo_inst_exportzp_symbol"))
+            self._handle_import_export(
+                node,
+                state,
+                out,
+                kind=SymbolKind.EXPORT,
+                symbol_child_type=(
+                    "pseudo_inst_export_symbol"
+                    if node_type == "pseudo_inst_export"
+                    else "pseudo_inst_exportzp_symbol"
+                ),
+            )
             return
         if node_type in ("pseudo_inst_global", "pseudo_inst_globalzp"):
             self._handle_global(node, state, out)
@@ -699,10 +712,7 @@ class Document:
         if str_node is None:
             return
         raw = _text(str_node, state.src).strip()
-        if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
-            name = raw[1:-1]
-        else:
-            name = raw
+        name = raw[1:-1] if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"' else raw
         out.append(
             BufferSymbol(
                 name=name,
@@ -823,11 +833,7 @@ class Document:
             "pseudo_inst_struct",
             "pseudo_inst_union",
             "pseudo_inst_enum",
-        ):
-            sym = _first_child_of_type(node, "symbol")
-            if sym is not None:
-                out.add((sym.start_byte, sym.end_byte))
-        elif t in ("symbol_eq", "symbol_assign"):
+        ) or t in ("symbol_eq", "symbol_assign"):
             sym = _first_child_of_type(node, "symbol")
             if sym is not None:
                 out.add((sym.start_byte, sym.end_byte))
@@ -839,20 +845,17 @@ class Document:
             body = _first_child_of_type(node, "local_label_body")
             if body is not None:
                 out.add((body.start_byte, body.end_byte))
-        elif t in (
-            "pseudo_inst_import_symbol",
-            "pseudo_inst_importzp_symbol",
-            "pseudo_inst_export_symbol",
-            "pseudo_inst_exportzp_symbol",
+        elif (
+            t
+            in (
+                "pseudo_inst_import_symbol",
+                "pseudo_inst_importzp_symbol",
+                "pseudo_inst_export_symbol",
+                "pseudo_inst_exportzp_symbol",
+            )
+            or t == "pseudo_inst_struct_or_union_field"
+            or t == "pseudo_inst_enum_field"
         ):
-            sym = _first_child_of_type(node, "symbol")
-            if sym is not None:
-                out.add((sym.start_byte, sym.end_byte))
-        elif t == "pseudo_inst_struct_or_union_field":
-            sym = _first_child_of_type(node, "symbol")
-            if sym is not None:
-                out.add((sym.start_byte, sym.end_byte))
-        elif t == "pseudo_inst_enum_field":
             sym = _first_child_of_type(node, "symbol")
             if sym is not None:
                 out.add((sym.start_byte, sym.end_byte))
@@ -883,16 +886,15 @@ class Document:
 
         # Identifier-shaped reference nodes.
         if node.type == "symbol":
-            if (node.start_byte, node.end_byte) not in defn_spans:
-                if _text(node, src) == target:
-                    out.append(
-                        SymbolReference(
-                            name=target,
-                            uri=self.uri,
-                            range=_node_range(node),
-                            scope_path=scope,
-                        )
+            if (node.start_byte, node.end_byte) not in defn_spans and _text(node, src) == target:
+                out.append(
+                    SymbolReference(
+                        name=target,
+                        uri=self.uri,
+                        range=_node_range(node),
+                        scope_path=scope,
                     )
+                )
         elif node.type == "local_label_literal":
             # ``@name`` reference — match against the full @-prefixed name
             # since we now preserve the '@' in BufferSymbol.name (see
@@ -906,20 +908,19 @@ class Document:
                         scope_path=scope,
                     )
                 )
-        elif node.type == "macro_inst_name":
-            # A macro_inst's name — only a reference if it matches a known
-            # macro definition. Otherwise per Gap #4 it's a stray label-like
-            # token; we still emit it as a reference so the indexer can wire
-            # it up.
-            if _text(node, src) == target:
-                out.append(
-                    SymbolReference(
-                        name=target,
-                        uri=self.uri,
-                        range=_node_range(node),
-                        scope_path=scope,
-                    )
+        # A macro_inst's name — only a reference if it matches a known
+        # macro definition. Otherwise per Gap #4 it's a stray label-like
+        # token; we still emit it as a reference so the indexer can wire
+        # it up.
+        elif node.type == "macro_inst_name" and _text(node, src) == target:
+            out.append(
+                SymbolReference(
+                    name=target,
+                    uri=self.uri,
+                    range=_node_range(node),
+                    scope_path=scope,
                 )
+            )
 
         for c in node.children:
             self._walk_references(c, src, target, defn_spans, out, new_scope)
@@ -956,13 +957,16 @@ class Document:
         if t == "symbol":
             if (node.start_byte, node.end_byte) not in defn_spans:
                 name = _text(node, src)
-                out.append(SymbolReference(name=name, uri=self.uri, range=_node_range(node), scope_path=scope))
-        elif t == "local_label_literal":
+                out.append(
+                    SymbolReference(
+                        name=name, uri=self.uri, range=_node_range(node), scope_path=scope
+                    )
+                )
+        elif t == "local_label_literal" or t == "macro_inst_name":
             name = _text(node, src)
-            out.append(SymbolReference(name=name, uri=self.uri, range=_node_range(node), scope_path=scope))
-        elif t == "macro_inst_name":
-            name = _text(node, src)
-            out.append(SymbolReference(name=name, uri=self.uri, range=_node_range(node), scope_path=scope))
+            out.append(
+                SymbolReference(name=name, uri=self.uri, range=_node_range(node), scope_path=scope)
+            )
 
         for c in node.children:
             self._walk_all_references(c, src, defn_spans, out, new_scope)
@@ -1006,21 +1010,25 @@ class Document:
 # the user wants explicit grouping, ``.proc`` does that.
 
 
-_BOUNDARY_KINDS = frozenset({
-    SymbolKind.LABEL,
-    SymbolKind.PROC,
-    SymbolKind.SCOPE,
-    SymbolKind.MACRO,
-    SymbolKind.STRUCT,
-    SymbolKind.UNION,
-    SymbolKind.ENUM,
-    SymbolKind.SEGMENT,
-})
+_BOUNDARY_KINDS = frozenset(
+    {
+        SymbolKind.LABEL,
+        SymbolKind.PROC,
+        SymbolKind.SCOPE,
+        SymbolKind.MACRO,
+        SymbolKind.STRUCT,
+        SymbolKind.UNION,
+        SymbolKind.ENUM,
+        SymbolKind.SEGMENT,
+    }
+)
 
-_ABSORBED_KINDS = frozenset({
-    SymbolKind.CHEAP_LOCAL,
-    SymbolKind.ANON_LABEL,
-})
+_ABSORBED_KINDS = frozenset(
+    {
+        SymbolKind.CHEAP_LOCAL,
+        SymbolKind.ANON_LABEL,
+    }
+)
 
 
 def _synthesize_label_bodies(

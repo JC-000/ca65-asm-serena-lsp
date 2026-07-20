@@ -149,11 +149,14 @@ def test_anonymous_label_positions():
     text = doc.text.splitlines()
     for i, line in enumerate(text):
         stripped = line.split(";", 1)[0].rstrip()
-        if stripped.strip() == ":" or stripped.lstrip().startswith(":") and stripped.lstrip()[:1] == ":" and len(stripped.lstrip()) > 0:
-            # Only count bare-colon definitions, not :+/:- references.
-            if stripped.strip().startswith(":") and not stripped.strip().startswith(":+") and not stripped.strip().startswith(":-"):
-                if stripped.strip() == ":" or stripped.strip().split()[0] == ":":
-                    expected_lines.append(i)
+        bare = stripped.strip()
+        # Only count bare-colon definitions, not :+/:- references.
+        if (
+            bare.startswith(":")
+            and not bare.startswith((":+", ":-"))
+            and (bare == ":" or bare.split()[0] == ":")
+        ):
+            expected_lines.append(i)
     assert len(anons) == len(expected_lines), (
         f"expected anon labels at lines {expected_lines}, got at {lines}"
     )

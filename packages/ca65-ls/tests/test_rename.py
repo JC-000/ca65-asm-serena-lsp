@@ -19,7 +19,6 @@ import pytest
 from ca65_ls import server as srv
 from ca65_ls.server import Ca65LanguageServer
 
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "test_repo"
 
 
@@ -37,7 +36,9 @@ def _open(server: Ca65LanguageServer, path: Path) -> str:
     srv.on_did_open(
         server,
         lsp.DidOpenTextDocumentParams(
-            text_document=lsp.TextDocumentItem(uri=uri, language_id="ca65", version=1, text=path.read_text())
+            text_document=lsp.TextDocumentItem(
+                uri=uri, language_id="ca65", version=1, text=path.read_text()
+            )
         ),
     )
     return uri
@@ -145,7 +146,7 @@ def test_rename_top_level_label_global(ls):
 
     # Cursor on `.proc lib_export` -> the proc-name token.
     text = libs.read_text()
-    for lineno, line in enumerate(text.splitlines()):
+    for lineno, line in enumerate(text.splitlines()):  # noqa: B007 — lineno used after break
         if ".proc lib_export" in line:
             col = line.index("lib_export") + 1
             break
@@ -172,8 +173,11 @@ def test_rename_refuses_adding_at_prefix_to_plain_label(ls):
     uri = _open(server, libs)
     text = libs.read_text()
     lineno, col = next(
-        ((i, line.index("lib_export") + 1) for i, line in enumerate(text.splitlines())
-         if ".proc lib_export" in line),
+        (
+            (i, line.index("lib_export") + 1)
+            for i, line in enumerate(text.splitlines())
+            if ".proc lib_export" in line
+        ),
         (None, None),
     )
     assert lineno is not None

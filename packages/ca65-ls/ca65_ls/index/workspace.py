@@ -32,13 +32,12 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Protocol
 
 from ca65_ls.types import (
     BufferSymbol,
     Position,
     Range,
-    SymbolKind,
     SymbolReference,
     WorkspaceSymbol,
 )
@@ -52,6 +51,7 @@ except ImportError:  # pragma: no cover
 
 try:
     import pathspec  # noqa: F401
+
     _HAS_PATHSPEC = True
 except ImportError:  # pragma: no cover
     _HAS_PATHSPEC = False
@@ -125,7 +125,7 @@ class _BufferViewImpl:
 
 # A `parser` callable: (absolute_path, text) -> BufferView. Tests inject a
 # BufferShim; production passes None and we fall back to Document().
-Parser = Callable[[Path, str], Optional[BufferView]]
+Parser = Callable[[Path, str], BufferView | None]
 
 
 # --------------------------------------------------------------------- helpers
@@ -215,8 +215,7 @@ def _iter_source_files(project_root: Path) -> Iterator[Path]:
         yield path
 
 
-def _scope_matches(reference_scope: tuple[str, ...],
-                   symbol_scope: tuple[str, ...]) -> bool:
+def _scope_matches(reference_scope: tuple[str, ...], symbol_scope: tuple[str, ...]) -> bool:
     """A reference resolves to a symbol if the reference's scope path is
     inside or equal to the symbol's scope path (prefix match from the
     outside in). This is a simple v1 disambiguator; the LSP server can
@@ -231,9 +230,7 @@ def _position_in_range(pos: Position, r: Range) -> bool:
     r.start <= pos < r.end (lexicographic by (line, character))."""
     if (pos.line, pos.character) < (r.start.line, r.start.character):
         return False
-    if (pos.line, pos.character) >= (r.end.line, r.end.character):
-        return False
-    return True
+    return not (pos.line, pos.character) >= (r.end.line, r.end.character)
 
 
 # ---------------------------------------------------------- dbg-enrichment
@@ -480,9 +477,7 @@ class WorkspaceIndex:
         h = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()
         return self._cache_dir() / f"{h[:16]}.pkl"
 
-    def _load_from_cache(
-        self, path: Path, key: str
-    ) -> _CachedFileEntry | None:
+    def _load_from_cache(self, path: Path, key: str) -> _CachedFileEntry | None:
         if not self._cache_enabled:
             return None
         cp = self._cache_path_for(path)
@@ -575,9 +570,7 @@ class WorkspaceIndex:
             else:
                 # Test/shim path: (name, Range, scope_path) tuple.
                 ref_name, ref_range, ref_scope = item
-                ref = SymbolReference(
-                    name=ref_name, uri=uri, range=ref_range, scope_path=ref_scope
-                )
+                ref = SymbolReference(name=ref_name, uri=uri, range=ref_range, scope_path=ref_scope)
             ref_records.append(ref)
             self._references_by_name.setdefault(ref.name, []).append(ref)
         self._references_by_uri[uri] = ref_records
