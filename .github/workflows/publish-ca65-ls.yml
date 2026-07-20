@@ -5,11 +5,10 @@
 # `release` environment on PyPI under Trusted Publishers for the project.
 # See https://docs.pypi.org/trusted-publishers/.
 #
-# BLOCKER: ca65-ls currently depends on tree-sitter-ca65 via a git URL,
-# which PyPI's package validator rejects.  This workflow will fail on
-# `twine check` until we either (a) wait for upstream to publish
-# tree-sitter-ca65 on PyPI and pin a version, or (b) vendor the grammar
-# into ca65-ls.  See RELEASING.md.
+# The tree-sitter-ca65 grammar is vendored and compiled as an abi3 C
+# extension (see packages/ca65-ls/vendor/tree-sitter-ca65/NOTICE.md), so
+# wheels are platform-specific: one cp310-abi3 wheel per OS/arch, built by
+# cibuildwheel, covering CPython 3.10+.
 
 name: Publish ca65-ls to PyPI
 
@@ -24,8 +23,8 @@ on:
         required: false
 
 jobs:
-  build:
-    name: Build sdist and wheel
+  build_sdist:
+    name: Build sdist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,24 +37,54 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Build distributions
+      - name: Build sdist
         working-directory: packages/ca65-ls
-        run: |
-          uv build --sdist --wheel --out-dir ../../dist
+        run: uv build --sdist --out-dir ../../dist
 
-      - name: Validate distributions (twine check)
-        run: |
-          uv tool run --with twine twine check dist/*
+      - name: Validate sdist (twine check)
+        run: uv tool run --with twine twine check dist/*
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ca65-ls-dist
+          name: dist-sdist
+          path: dist/
+
+  build_wheels:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.0
+        with:
+          package-dir: packages/ca65-ls
+          output-dir: dist
+        env:
+          # The extension targets the limited API (abi3), so a single
+          # cp310 build covers all supported CPython versions.
+          CIBW_BUILD: "cp310-*"
+          CIBW_ARCHS_MACOS: universal2
+          # Smoke-test each built wheel: vendored grammar loads and parses.
+          CIBW_TEST_COMMAND: >-
+            python -c "from tree_sitter import Language, Parser;
+            from ca65_ls import _grammar;
+            t = Parser(Language(_grammar.language())).parse(b'.proc m\nrts\n.endproc\n');
+            assert t.root_node.type == 'source' and not t.root_node.has_error"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-wheels-${{ matrix.os }}
           path: dist/
 
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [build_sdist, build_wheels]
     runs-on: ubuntu-latest
     # PyPI trusted publishing requires the workflow to declare an environment.
     environment:
@@ -66,7 +95,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: ca65-ls-dist
+          pattern: dist-*
+          merge-multiple: true
           path: dist/
 
       - name: Publish to PyPI via trusted-publisher OIDC

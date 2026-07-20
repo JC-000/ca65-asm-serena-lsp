@@ -1,0 +1,2 @@
+# Vendored grammar sources must ship in the sdist so it can build anywhere.
+recursive-include vendor/tree-sitter-ca65 *.c *.h *.js *.json *.md

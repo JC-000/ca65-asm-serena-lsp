@@ -36,3 +36,7 @@ dist/
 # ...but keep committed test fixtures (regenerable via tools/regen_fixtures.sh)
 !packages/ca65-ls/tests/fixtures/**/*.map
 !packages/ca65-ls/tests/fixtures/**/*.lst
+
+# setuptools C-extension build artifacts (vendored grammar)
+build/
+*.so

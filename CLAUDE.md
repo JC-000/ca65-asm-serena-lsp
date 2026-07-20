@@ -45,7 +45,7 @@ The three layers were built by parallel agents against a **pinned data contract*
 
 **Key architectural insight (and a correction to the original plan):** tree-sitter-ca65 is the **primary source of truth**, not the cc65 debug info. The `.dbg` file is an opt-in enricher (addresses, segments, archive-symbol provenance) when `ld65 --dbgfile` is set; the LSP degrades gracefully to tree-sitter-only when not. Reason: real CA65 builds (including the user's c64-https) don't pass `--dbgfile` by default. See `packages/ca65-ls/docs/m1-spike.md`.
 
-**Tree-sitter grammar pin:** `pogyomo/tree-sitter-ca65 @ b22ead1`. The earlier `babasbot/tree-sitter-ca65` referenced in pre-M1 research is 404. Five grammar gaps documented in `docs/research/ts-ca65-coverage.md`.
+**Tree-sitter grammar pin:** `pogyomo/tree-sitter-ca65 @ b22ead1`, vendored under `packages/ca65-ls/vendor/tree-sitter-ca65/` (no external grammar dependency). The earlier `babasbot/tree-sitter-ca65` referenced in pre-M1 research is 404. Five grammar gaps documented in `docs/research/ts-ca65-coverage.md`.
 
 ## Commands
 
@@ -99,7 +99,7 @@ The fork's venv has both Serena and `ca65-ls` installed editable, so changes in 
 - ✅ M4 — c64-https validated end-to-end; hover + rename + scope-aware refs + cache auto-invalidation all landed. Cold reindex perf 13.4s → 1.67s (8×, under budget).
 - ✅ M5 — PR opened CI-green (tests on all 3 OSes, mypy, format/lint, CodeQL); closed unmerged 2026-05-26 (see above).
 
-**One open external dependency:** ca65-ls PyPI publish is blocked on `tree-sitter-ca65` getting a PyPI release. Tracking at [pogyomo/tree-sitter-ca65#1](https://github.com/pogyomo/tree-sitter-ca65/issues/1). Fallback: vendor the grammar into ca65-ls (see `RELEASING.md`).
+**PyPI blocker resolved (2026-07-20):** the `tree-sitter-ca65` grammar is vendored into `packages/ca65-ls/vendor/tree-sitter-ca65/` and compiled as the abi3 extension `ca65_ls._grammar._binding` (setuptools backend; provenance/update procedure in the vendor NOTICE.md). No git-URL deps remain; first PyPI release just needs the `RELEASING.md` tag procedure. Upstream ask [pogyomo/tree-sitter-ca65#1](https://github.com/pogyomo/tree-sitter-ca65/issues/1) stays open but is no longer load-bearing.
 
 ## Gotchas worth knowing
 
