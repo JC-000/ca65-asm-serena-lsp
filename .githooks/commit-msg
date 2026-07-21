@@ -1,0 +1,59 @@
+#!/bin/sh
+set -eu
+
+# CLIENT-SIDE COMMIT-MESSAGE ENFORCEMENT
+# Substitute before installing:
+#   3798556+JC-000@users.noreply.github.com              — e.g. 3798556+JC-000@users.noreply.github.com
+#   @icloud\.com|darksideresearch\.com|darksideresearchinc\.com      — alternation, e.g. darksideresearch\.com|@icloud\.com
+#   noreply@anthropic.com   — space-separated list of extra allowed co-author emails
+#                                   e.g.  noreply@anthropic.com
+
+msg_file="$1"
+target='3798556+JC-000@users.noreply.github.com'
+banned_regex='@icloud\.com|darksideresearch\.com|darksideresearchinc\.com'
+allowed_coauthors='noreply@anthropic.com'
+
+# Reject if any banned domain appears.
+if grep -iE "$banned_regex" "$msg_file" >/dev/null 2>&1; then
+	matched=$(grep -iE -o "$banned_regex" "$msg_file" | head -1)
+	printf "commit-msg: message references forbidden pattern '%s'\n" "$matched" >&2
+	exit 1
+fi
+
+# Walk Co-authored-by trailers. Allow only target + allowed list.
+coauth_lines=$(grep -iE '^[[:space:]]*Co-authored-by:' "$msg_file" || true)
+if [ -n "$coauth_lines" ]; then
+	IFS='
+'
+	for line in $coauth_lines; do
+		email=$(printf '%s' "$line" | sed -n 's/.*<\([^>]*\)>.*/\1/p')
+		if [ -z "$email" ]; then
+			printf "commit-msg: Co-authored-by line has no <email>: %s\n" "$line" >&2
+			exit 1
+		fi
+		email_lc=$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')
+		target_lc=$(printf '%s' "$target" | tr '[:upper:]' '[:lower:]')
+
+		ok=0
+		if [ "$email_lc" = "$target_lc" ]; then
+			ok=1
+		else
+			for allowed in $allowed_coauthors; do
+				allowed_lc=$(printf '%s' "$allowed" | tr '[:upper:]' '[:lower:]')
+				if [ "$email_lc" = "$allowed_lc" ]; then
+					ok=1
+					break
+				fi
+			done
+		fi
+
+		if [ "$ok" -eq 0 ]; then
+			printf "commit-msg: Co-authored-by email '%s' not in allow-list (target: '%s', allowed: %s)\n" \
+				"$email" "$target" "$allowed_coauthors" >&2
+			exit 1
+		fi
+	done
+	unset IFS
+fi
+
+exit 0

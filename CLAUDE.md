@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The README is the public overview (refreshed 2026-07-20). Deeper project state lives in:
 
-1. **`/Users/someone/.claude/plans/there-are-no-lsp-s-drifting-rain.md`** — the approved implementation plan, with milestones M1–M5, architecture, agent-team plan, and risk register.
-2. **`/Users/someone/.claude/projects/-Users-someone-Documents-ca65-asm-serena-lsp/memory/MEMORY.md`** — auto-memory index pointing to canonical project notes managed by Serena (run `mcp__serena__list_memories` then `mcp__serena__read_memory`).
+1. **`~/.claude/plans/there-are-no-lsp-s-drifting-rain.md`** — the approved implementation plan, with milestones M1–M5, architecture, agent-team plan, and risk register.
+2. **`~/.claude/projects/-Users-someone-Documents-ca65-asm-serena-lsp/memory/MEMORY.md`** — auto-memory index pointing to canonical project notes managed by Serena (run `mcp__serena__list_memories` then `mcp__serena__read_memory`).
 3. **`docs/research/ts-ca65-coverage.md`** + **`docs/research/dbg-format.md`** — the Researcher agent's directive-by-directive grammar coverage matrix and `.dbg` format spec. Reference material the Indexer and Parser layers depend on.
 4. **`packages/ca65-ls/docs/m1-spike.md`** — surprises and constraints discovered during M1 (esp. that library archives like `c64.lib` don't contribute sym records to the `.dbg`).
 
@@ -15,8 +15,8 @@ The README is the public overview (refreshed 2026-07-20). Deeper project state l
 
 This project spans two checkouts that must stay in sync:
 
-- **`/Users/someone/Documents/ca65-asm-serena-lsp/`** (this repo, GitHub: `JC-000/ca65-asm-serena-lsp`, private) — the standalone `ca65-ls` Python LSP daemon under `packages/ca65-ls/`, plus research docs, scripts, and the approved plan.
-- **`/Users/someone/Documents/serena/`** (GitHub: `JC-000/serena`, fork of `oraios/serena`) — the Serena integration: `Ca65LanguageServer` shim, `Language.CA65` enum entry, factory case, test corpus, and the `test/solidlsp/ca65/test_ca65_basic.py` end-to-end tests. Lives permanently on branch `feature/ca65-language-server` — upstreaming was declined (see Milestone status), so the fork is the long-term home and is periodically rebased onto `oraios/serena` main.
+- **`~/Documents/ca65-asm-serena-lsp/`** (this repo, GitHub: `JC-000/ca65-asm-serena-lsp`, private) — the standalone `ca65-ls` Python LSP daemon under `packages/ca65-ls/`, plus research docs, scripts, and the approved plan.
+- **`~/Documents/serena/`** (GitHub: `JC-000/serena`, fork of `oraios/serena`) — the Serena integration: `Ca65LanguageServer` shim, `Language.CA65` enum entry, factory case, test corpus, and the `test/solidlsp/ca65/test_ca65_basic.py` end-to-end tests. Lives permanently on branch `feature/ca65-language-server` — upstreaming was declined (see Milestone status), so the fork is the long-term home and is periodically rebased onto `oraios/serena` main.
 
 When changing the buffer/index/server interfaces, **both repos need updates**: the LSP server's behavior in this repo, and Serena's test assertions in the fork.
 
@@ -78,7 +78,7 @@ bash tools/regen_fixtures.sh
 For the Serena fork's integration tests (M3 onwards):
 
 ```sh
-cd /Users/someone/Documents/serena
+cd ~/Documents/serena
 .venv/bin/python -m pytest test/solidlsp/ca65/test_ca65_basic.py -v
 ```
 
@@ -112,8 +112,8 @@ The fork's venv has both Serena and `ca65-ls` installed editable, so changes in 
 
 ## Conventions
 
-- The fork is on branch `feature/ca65-language-server`, kept rebased onto `oraios/serena` main (force-push with lease after each rebase; last rebase 2026-07-20, commits `005729be`+`68c81915` atop `5c85d961`). **Don't `git add -A` inside `/Users/someone/Documents/serena/`** — claude-code-rig drifts `.serena/memories/*` to symlinks and `.gitignore`, which would silently land in a fork commit. Stage explicit paths. The rig re-drifts these files *between tool calls*, so the 11 drift paths (`.gitignore`, `.serena/project.yml`, `.serena/memories/*.md`) carry local `git update-index --skip-worktree` flags — fork `git status` looks clean even while the rig symlinks are live; unset with `--no-skip-worktree` if a path must track normally (e.g. before a future rebase touching them).
-- Fork validation commands (upstream replaced mypy with **ty**): `uv run poe lint`, `uv run poe type-check`, `uv run pytest test/solidlsp/ca65/test_ca65_basic.py -vv`. **`uv sync` prunes the editable ca65-ls install** — re-run `uv pip install -e /Users/someone/Documents/ca65-asm-serena-lsp/packages/ca65-ls` afterwards.
+- The fork is on branch `feature/ca65-language-server`, kept rebased onto `oraios/serena` main (force-push with lease after each rebase; last rebase 2026-07-20, commits `005729be`+`68c81915` atop `5c85d961`). **Don't `git add -A` inside `~/Documents/serena/`** — claude-code-rig drifts `.serena/memories/*` to symlinks and `.gitignore`, which would silently land in a fork commit. Stage explicit paths. The rig re-drifts these files *between tool calls*, so the 11 drift paths (`.gitignore`, `.serena/project.yml`, `.serena/memories/*.md`) carry local `git update-index --skip-worktree` flags — fork `git status` looks clean even while the rig symlinks are live; unset with `--no-skip-worktree` if a path must track normally (e.g. before a future rebase touching them).
+- Fork validation commands (upstream replaced mypy with **ty**): `uv run poe lint`, `uv run poe type-check`, `uv run pytest test/solidlsp/ca65/test_ca65_basic.py -vv`. **`uv sync` prunes the editable ca65-ls install** — re-run `uv pip install -e ~/Documents/ca65-asm-serena-lsp/packages/ca65-ls` afterwards.
 - Commits include `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` per the user's git workflow.
 - Test fixtures in `packages/ca65-ls/tests/fixtures/test_repo/` mirror `test/resources/repos/ca65/test_repo/` in the Serena fork. The source files (`src/*.s`, `inc/*.inc`, `cfg/*.cfg`) are authored here; the build artifacts (`build/test_repo.dbg|lbl|map`) are committed snapshots regenerated by `tools/regen_fixtures.sh`.
 - Eight `c64-*` sibling projects under `~/Documents/` are the realism corpus once v1 stabilizes on `c64-https`. Each is a regression test for the indexer.

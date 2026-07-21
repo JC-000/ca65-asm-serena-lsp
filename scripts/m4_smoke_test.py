@@ -4,7 +4,7 @@ M4 smoke test -- exercise the CA65 LSP + Serena symbolic tools against a real
 CA65 project (defaults to c64-https) and report what works.
 
 Runs entirely in-process using the Serena fork's venv at
-/Users/someone/Documents/serena/.venv, so it does NOT require restarting
+~/Documents/serena/.venv, so it does NOT require restarting
 Claude Code or modifying ~/.claude.json.  This makes it safe to run repeatedly
 while iterating on the LSP.
 
@@ -12,7 +12,7 @@ Usage:
     scripts/m4_smoke_test.py [PROJECT_PATH]
     scripts/m4_smoke_test.py --help
 
-Default PROJECT_PATH is /Users/someone/Documents/c64-https.
+Default PROJECT_PATH is ~/Documents/c64-https.
 
 What it checks (in order; failures don't stop later checks):
 
@@ -48,7 +48,7 @@ from typing import Any, Optional
 # ------------------------------------------------------------ venv discovery
 
 
-SERENA_VENV = Path("/Users/someone/Documents/serena/.venv")
+SERENA_VENV = Path.home() / "Documents" / "serena" / ".venv"
 
 
 def _bootstrap_into_fork_venv() -> None:
@@ -62,11 +62,11 @@ def _bootstrap_into_fork_venv() -> None:
         sys.stderr.write(
             f"ERROR: Serena fork venv not found at {SERENA_VENV}.\n"
             f"Run the M3 setup in the project repo first:\n"
-            f"    cd /Users/someone/Documents/serena\n"
+            f"    cd {SERENA_VENV.parent}\n"
             f"    uv venv --python 3.12 .venv\n"
             f"    uv pip install --python .venv/bin/python -e .\n"
             f"    uv pip install --python .venv/bin/python "
-            f"-e /Users/someone/Documents/ca65-asm-serena-lsp/packages/ca65-ls\n"
+            f"-e {Path(__file__).resolve().parent.parent / 'packages' / 'ca65-ls'}\n"
         )
         sys.exit(1)
     if sys.executable != str(fork_python):
@@ -282,7 +282,7 @@ def check_document_symbols(project_root: Path, idx: WorkspaceIndex, report: Repo
 # --------------------------------------------------------------- main
 
 
-DEFAULT_PROJECT = Path("/Users/someone/Documents/c64-https")
+DEFAULT_PROJECT = Path.home() / "Documents" / "c64-https"
 
 
 def main(argv: list[str] | None = None) -> int:
