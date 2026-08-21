@@ -109,6 +109,7 @@ The fork's venv has both Serena and `ca65-ls` installed editable, so changes in 
 4. **pygls 2.x imports moved** to `pygls.lsp.server.LanguageServer` (not `pygls.server`).
 5. **Stale `.pyc` after parallel-agent edits** can produce confusing `AttributeError` failures that vanish on `find . -name __pycache__ -exec rm -rf {} +`. Worth trying before deeper debugging.
 6. **Serena's root `.gitignore` excludes `build/`** — the fork's committed CA65 fixture `.dbg/.lbl/.map` files live in `test/resources/repos/ca65/test_repo/build/` and need `git add -f`. The per-fixture `.gitignore` keeps `.o`/`.prg` (regenerable) out.
+7. **The CA65 tools silently don't run for a project unless its `.serena/project.yml` lists `ca65` under `languages:`** — activation succeeds and symbolic tools respond, just without the CA65 backend. Those `project.yml` files are rig-managed symlinks; edit the targets under `~/Documents/new-computer-setup/claude-code-rig/state/serena-config/<project>/`. Serena caches project configs at MCP startup, so config edits need a Claude Code restart — `activate_project` and `restart_language_server` won't reload them. (Audited and fixed across all c64-* projects 2026-08-21.)
 
 ## Conventions
 
