@@ -57,6 +57,29 @@ uvx --refresh --from "git+https://github.com/JC-000/serena@feature/ca65-language
 
 `ca65-ls` itself is installed `--with-editable`, so local source changes take effect on the next MCP restart with no reinstall.
 
+### Per-project language config
+
+The CA65 language server only starts for projects whose `.serena/project.yml` lists it:
+
+```yaml
+languages:
+- python
+- ca65
+```
+
+Without that entry the MCP activates fine but every symbolic tool silently runs without the CA65 backend — the most likely cause of "the CA65 tools aren't being used". Serena loads project configs once at MCP startup, so after editing a `project.yml`, restart Claude Code; re-activating the project or calling `restart_language_server` does not reload it.
+
+### Claude Code hooks
+
+Serena ships Claude Code hooks (`serena-hooks activate|remind|auto-approve|cleanup`, wired in `~/.claude/settings.json`). The stock install runs them from the PyPI `serena-agent` package, whose reminder hook does not recognize assembly sources. The fork adds `.s`/`.inc`/`.asm`/`.mac` to the reminder's code-file extensions; to get that behavior, point the hook commands at the fork checkout's entrypoint instead:
+
+```sh
+# instead of: uvx --from serena-agent serena-hooks <cmd> --client=claude-code
+~/Documents/serena/.venv/bin/serena-hooks <cmd> --client=claude-code
+```
+
+The fork venv's install is editable, so hook changes there take effect immediately — but the hooks now depend on that venv existing.
+
 ## PyPI
 
 The former blocker (a git-URL dependency on `tree-sitter-ca65`, which PyPI rejects) is resolved: the grammar is vendored into `packages/ca65-ls/vendor/tree-sitter-ca65/` (pinned `b22ead1`, MIT — see the NOTICE.md there) and compiled into the wheel as an abi3 C extension. First release procedure: `RELEASING.md`.
