@@ -69,7 +69,12 @@ _DEFAULT_IGNORES = (
     ".git/",
     ".ca65-ls/",
 )
-CACHE_FORMAT_VERSION = 4  # bump if the on-disk cache shape changes
+CACHE_FORMAT_VERSION = 5  # bump if the on-disk cache shape *or* the symbols it stores change
+# v5 (2026-08-28): `.export`/`.exportzp`/`.global` declarators whose target is
+# also defined in the same file are no longer emitted as separate symbols (they
+# duplicated the definition -- ~25% of all symbols on c64-https).  The cache key
+# is only (path, mtime_ns, size), so caches written before this change would keep
+# serving the phantom symbols indefinitely; invalidate them.
 # v4 (2026-05-19): references are now collected via a single tree walk per
 # file (Document.all_references) rather than one walk per name; the cached
 # reference list is strictly more comprehensive (includes refs to names not

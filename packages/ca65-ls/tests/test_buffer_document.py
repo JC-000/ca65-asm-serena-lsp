@@ -191,10 +191,33 @@ def test_plain_label_top_level():
     assert any(s.name == "lib_buffer" and s.scope_path == () for s in labels)
 
 
-def test_exportzp_emits_all():
+def test_exportzp_suppressed_when_defined_in_same_file():
+    # zp.s both `.exportzp`s and defines ptr1/ptr2/tmp1, so the declarators are
+    # redundant with the labels and are dropped; only the definitions remain.
     doc = _load("zp.s")
     exports = [s for s in doc.symbols if s.kind == SymbolKind.EXPORT]
-    assert {s.name for s in exports} == {"ptr1", "ptr2", "tmp1"}
+    assert exports == []
+    labels = {s.name for s in doc.symbols if s.kind == SymbolKind.LABEL}
+    assert {"ptr1", "ptr2", "tmp1"} <= labels
+
+
+def test_export_kept_when_target_not_defined_in_file():
+    # A re-export of an imported symbol is the only thing this file says about
+    # the name, so the declarator must survive.
+    doc = Document(
+        uri="file:///reexport.s",
+        text=".import outside_sym\n.export outside_sym\n",
+    )
+    exports = [s for s in doc.symbols if s.kind == SymbolKind.EXPORT]
+    assert [s.name for s in exports] == ["outside_sym"]
+
+
+def test_export_suppression_dedups_proc():
+    # `.export _start` + `.proc _start` is one entity, not two.
+    doc = _load("main.s")
+    matches = [s for s in doc.symbols if s.name == "_start"]
+    assert len(matches) == 1
+    assert matches[0].kind == SymbolKind.PROC
 
 
 def test_references_for_lib_const():

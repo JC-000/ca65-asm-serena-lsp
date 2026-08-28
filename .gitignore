@@ -40,3 +40,6 @@ dist/
 # setuptools C-extension build artifacts (vendored grammar)
 build/
 *.so
+
+# local workspace index cache
+.ca65-ls/
