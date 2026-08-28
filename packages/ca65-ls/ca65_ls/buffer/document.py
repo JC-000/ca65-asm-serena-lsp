@@ -261,6 +261,13 @@ class Document:
         src_lines = self._text.splitlines()
         top = _synthesize_label_bodies(top, src_lines)
 
+        # Post-process: drop ``.export``/``.exportzp``/``.global`` declarators
+        # whose target is also *defined* in this same file.  The declarator and
+        # the definition are the same entity, so emitting both made every
+        # exported routine show up twice in document symbols (once as a
+        # one-token EXPORT, once as the real PROC/LABEL/CONSTANT).
+        top = _suppress_redundant_exports(top)
+
         self._symbols = tuple(top)
         self._flat = tuple(self._flatten(top))
 
@@ -1029,6 +1036,63 @@ _ABSORBED_KINDS = frozenset(
         SymbolKind.ANON_LABEL,
     }
 )
+
+
+#: Symbol kinds that can be the target of a ``.export``.  An EXPORT declarator
+#: naming one of these in the same file is redundant with the definition and is
+#: dropped by :func:`_suppress_redundant_exports`.  Deliberately excludes
+#: CHEAP_LOCAL / ANON_LABEL / FIELD / SEGMENT, which cannot be exported and
+#: whose names could otherwise collide with a genuine re-export.
+_EXPORTABLE_DEFINITION_KINDS: frozenset[SymbolKind] = frozenset(
+    (
+        SymbolKind.PROC,
+        SymbolKind.SCOPE,
+        SymbolKind.MACRO,
+        SymbolKind.STRUCT,
+        SymbolKind.UNION,
+        SymbolKind.ENUM,
+        SymbolKind.LABEL,
+        SymbolKind.CONSTANT,
+    )
+)
+
+
+def _collect_definition_names(syms: list[BufferSymbol], out: set[str]) -> None:
+    """Recursively gather the names of every symbol that *defines* an
+    exportable entity."""
+    for s in syms:
+        if s.kind in _EXPORTABLE_DEFINITION_KINDS:
+            out.add(s.name)
+        if s.children:
+            _collect_definition_names(list(s.children), out)
+
+
+def _prune_exports(syms: list[BufferSymbol], defined: set[str]) -> list[BufferSymbol]:
+    kept: list[BufferSymbol] = []
+    for s in syms:
+        if s.kind is SymbolKind.EXPORT and s.name in defined:
+            # Redundant declarator: the definition in this file carries the
+            # real range/body, so keep only that one.
+            continue
+        if s.children:
+            s = replace(s, children=tuple(_prune_exports(list(s.children), defined)))
+        kept.append(s)
+    return kept
+
+
+def _suppress_redundant_exports(syms: list[BufferSymbol]) -> list[BufferSymbol]:
+    """Drop EXPORT declarators whose target is defined in the same file.
+
+    ``.export foo`` next to ``.proc foo`` describes one entity, not two.  An
+    export with no in-file definition (a re-export of an ``.import``ed symbol,
+    or a symbol defined in another translation unit) is left alone, since there
+    the declarator is the only thing this file has to say about the name.
+    """
+    defined: set[str] = set()
+    _collect_definition_names(syms, defined)
+    if not defined:
+        return syms
+    return _prune_exports(syms, defined)
 
 
 def _synthesize_label_bodies(
