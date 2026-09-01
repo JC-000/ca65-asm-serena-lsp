@@ -90,6 +90,14 @@ The fork's venv has both Serena and `ca65-ls` installed editable, so changes in 
 - `scripts/m4_smoke_test.py [PROJECT_PATH]` — exercises the LSP against any CA65 project (default: c64-https) and prints a Markdown-friendly report. Auto-bootstraps into the Serena fork's venv. Use for collecting M4 bug reports.
 - `scripts/symbolic_usage_report.py [--since 24h] [--projects FILE]` — measures how often real CA65 work uses the symbolic tools versus raw reads/edits. Reads Claude Code's own transcripts under `~/.claude/projects/*/*.jsonl`, which record *every* tool call (native `Read`/`Grep`/`Edit` included) with a timestamp and cwd. **Serena's web dashboard cannot answer this**: `/get_tool_stats` counts only Serena MCP calls and resets whenever the MCP process restarts, so it under-reports by construction. Windows are arbitrary and the transcripts are durable, so the script also reconstructs past periods retroactively.
 
+### The Bash nudge hook (installed 2026-09-01)
+
+- `scripts/ca65_bash_nudge.py` — a PreToolUse hook wired into `~/.claude/settings.json` with an empty matcher (it must see both `Bash` calls and `mcp__serena__` symbolic calls). Denies the 3rd consecutive Bash read/grep of an assembly file **inside a project whose `.serena/project.yml` enables ca65**, naming the symbolic tool that would have answered the query. A deny resets the counter so the next retry proceeds; any symbolic call also resets it; at most one nudge per 2 minutes.
+
+Exists because **Serena's own reminder hook is blind to `Bash` on Claude Code**: `hooks.py` `is_read_call`/`is_grep_call` match only the native `Read`/`Grep` tool *names* for `CLAUDE_CODE`, while the `GROK` and `CODEX` branches also classify shell commands. Measured sessions ran 203 Bash calls and a single `Read`, so Serena's counter never advanced. Extending Serena's hook instead would fire machine-wide across its ~40 `_CODE_FILE_EXTENSIONS` and add a 4th fork commit to carry through rebases. Unlike Serena's, this one splits compound commands (`cd src && grep foo bar.s`), which its first-token-only parse misses.
+
+To disable, delete the entry from `~/.claude/settings.json`; per-session counters live in `~/.claude/ca65-bash-nudge/`.
+
 ### The usage monitor (installed 2026-08-28)
 
 A LaunchAgent `com.jc000.ca65-symbolic-usage` snapshots a rolling 24h window hourly into `~/.serena/ca65-metrics/snapshots.jsonl`, then writes `final_report.md` and unloads itself once past `~/.serena/ca65-metrics/deadline`. `baseline_prefix.json` in that directory holds the pre-fix measurement to compare against.
