@@ -57,8 +57,15 @@ cd packages/ca65-ls
 uv venv --python 3.12 .venv
 uv pip install -e ".[dev]"
 
-# Run all tests (85 tests)
-.venv/bin/python -m pytest -q
+# Run the unit tests on the synthetic fixture (87 tests)
+.venv/bin/python -m pytest -q -m "not corpus"
+
+# Run the corpus contract suite against the real c64-* projects (~1 min; skips absent projects)
+.venv/bin/python -m pytest tests/corpus -q
+
+# The whole red/green gate (hook + unit + corpus + fork e2e). Run BEFORE and
+# AFTER any change to ca65-ls, the shim, or the nudge hook. See docs/red-green-gate.md.
+../../scripts/gate.sh            # or --quick to skip the corpus layers
 
 # Run a single test file or test
 .venv/bin/python -m pytest tests/test_dbg_oracle.py -v

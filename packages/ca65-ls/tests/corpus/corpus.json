@@ -1,0 +1,15 @@
+{
+  "_comment": "Real CA65 projects the contract suite runs against when present. Paths are relative to CA65_CORPUS_ROOT (default ~/Documents). Only projects whose .serena/project.yml enables ca65 belong here; c64-sid-instruments is ACME syntax and must stay out.",
+  "projects": [
+    "c64-https",
+    "c64-wireguard",
+    "c64-mlkem",
+    "c64-nist-curves",
+    "c64-ChaCha20-Poly1305",
+    "c64-aes256-ecdsa",
+    "c64-polyval",
+    "c64-x25519",
+    "c64-lib-contract",
+    "Amiga64"
+  ]
+}
