@@ -473,3 +473,265 @@ def test_cache_opt_out_does_not_create_dir(fresh_repo: Path, shim_parser):
     idx = WorkspaceIndex(fresh_repo, parser=shim_parser, cache=False)
     idx.reindex()
     assert not (fresh_repo / ".ca65-ls" / "cache").exists()
+
+
+# ------------------------------------------------- review fixes 2026-09-02
+#
+# Green regression guards for the index defects found by the 2026-09-02 review
+# (synthetic reproducers; the corpus versions live in tests/corpus/).
+
+
+def _write(root: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+def _rel(idx: WorkspaceIndex, name: str) -> list[str]:
+    from ca65_ls.server import _uri_to_path
+
+    return sorted(
+        _uri_to_path(s.uri).relative_to(idx.project_root).as_posix() for s in idx.lookup(name)
+    )
+
+
+def test_nested_shim_tree_is_stored_once(fresh_repo: Path, shim_parser):
+    """The shim hands the indexer a nested tree; Document hands it a flat
+    list whose records still carry children.  Both shapes must yield each
+    record exactly once."""
+    idx = WorkspaceIndex(fresh_repo, parser=shim_parser, cache=False)
+    idx.reindex()
+    assert len([s for s in idx.lookup("foo") if s.scope_path == ("helpers",)]) == 1
+    assert len([s for s in idx.lookup("@inner") if s.parent_label == "foo"]) == 1
+
+
+def test_real_parser_stores_each_nested_symbol_once(tmp_path: Path):
+    _write(tmp_path, {"a.s": ".proc p\nloop:\n@inner:\n dex\n bne @inner\n bne loop\n.endproc\n"})
+    idx = WorkspaceIndex(tmp_path, cache=False)
+    idx.reindex()
+    assert len(idx.lookup("p")) == 1
+    assert len(idx.lookup("loop")) == 1
+    assert len(idx.lookup("@inner")) == 1
+    assert idx.stats["symbols"] == 3
+
+
+def test_walk_fallback_prunes_ignored_ancestors_and_tool_dirs(tmp_path: Path):
+    """No git here, so the os.walk fallback runs: a `.claude/*` pattern must
+    exclude files any depth below, and `.claude/` / `.serena/` are excluded
+    even without a .gitignore."""
+    _write(
+        tmp_path,
+        {
+            "src/a.s": ".proc foo\n rts\n.endproc\n",
+            "vendor/x/y.s": ".proc foo\n rts\n.endproc\n",
+            ".claude/worktrees/agent-1/src/a.s": ".proc foo\n rts\n.endproc\n",
+            ".serena/memories/a.s": ".proc foo\n rts\n.endproc\n",
+            ".gitignore": "vendor/*\n",
+        },
+    )
+    idx = WorkspaceIndex(tmp_path, cache=False)
+    idx.reindex()
+    assert _rel(idx, "foo") == ["src/a.s"]
+    assert idx.stats["files"] == 1
+
+
+def _git(root: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+@pytest.fixture
+def git_project(tmp_path: Path) -> Path:
+    import shutil
+
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    _git(tmp_path, "init", "-q")
+    return tmp_path
+
+
+def test_git_enumeration_honours_every_exclude_source(git_project: Path):
+    """Inside a checkout the indexer asks git, so nested checkouts (agent
+    worktrees), `.git/info/exclude` and the configured excludes file are all
+    honoured -- none of which the pathspec walk could see."""
+    root = git_project
+    _write(
+        root,
+        {
+            "src/a.s": ".proc foo\n rts\n.endproc\n",
+            "src/untracked.s": ".proc bar\n rts\n.endproc\n",
+            "gen/out.s": ".proc foo\n rts\n.endproc\n",
+            "scratch/tmp.s": ".proc foo\n rts\n.endproc\n",
+            ".claude/worktrees/agent-1/src/a.s": ".proc foo\n rts\n.endproc\n",
+            "excludes.txt": "scratch/\n",
+        },
+    )
+    (root / ".git" / "info").mkdir(exist_ok=True)
+    (root / ".git" / "info" / "exclude").write_text("gen/\n")
+    _git(root, "config", "core.excludesFile", str(root / "excludes.txt"))
+    _git(root / ".claude" / "worktrees" / "agent-1", "init", "-q")  # a nested checkout
+    _git(root, "add", "src/a.s")
+
+    idx = WorkspaceIndex(root, cache=False)
+    idx.reindex()
+    assert _rel(idx, "foo") == ["src/a.s"]
+    assert _rel(idx, "bar") == ["src/untracked.s"], "untracked files are still indexed"
+
+
+def test_git_enumeration_is_sorted_and_skips_deleted_tracked_files(git_project: Path):
+    root = git_project
+    _write(root, {"src/b.s": "b: rts\n", "src/a.s": "a_lbl: rts\n", "src/gone.s": "gone: rts\n"})
+    _git(root, "add", "src")
+    (root / "src" / "gone.s").unlink()
+    from ca65_ls.index.workspace import _iter_source_files
+
+    files = [p.relative_to(root).as_posix() for p in _iter_source_files(root)]
+    assert files == ["src/a.s", "src/b.s"]
+
+
+def test_refresh_tracks_created_modified_and_deleted_files(tmp_path: Path):
+    _write(tmp_path, {"a.s": ".proc foo\n rts\n.endproc\n"})
+    idx = WorkspaceIndex(tmp_path, cache=False)
+    idx.reindex()
+    assert idx.refresh() is False, "nothing changed"
+
+    _write(tmp_path, {"b.s": ".proc bar\n jsr foo\n.endproc\n"})
+    assert idx.refresh() is True
+    assert _rel(idx, "bar") == ["b.s"]
+    assert [r.uri for r in idx.references("foo")] == [(tmp_path / "b.s").resolve().as_uri()]
+    assert idx.stats["files"] == 2
+
+    (tmp_path / "a.s").write_text(".proc foo\n rts\n.endproc\n.proc baz\n rts\n.endproc\n")
+    assert idx.refresh() is True
+    assert _rel(idx, "baz") == ["a.s"]
+
+    (tmp_path / "b.s").unlink()
+    assert idx.refresh() is True
+    assert idx.lookup("bar") == []
+    assert idx.references("foo") == []
+    assert idx.stats["files"] == 1
+    assert idx.stats["symbols"] == 2
+
+
+def test_refresh_max_age_throttles_the_scan(tmp_path: Path):
+    _write(tmp_path, {"a.s": ".proc foo\n rts\n.endproc\n"})
+    idx = WorkspaceIndex(tmp_path, cache=False)
+    idx.reindex()
+    _write(tmp_path, {"b.s": ".proc bar\n rts\n.endproc\n"})
+    assert idx.refresh(max_age=60.0) is False
+    assert idx.lookup("bar") == []
+    assert idx.refresh(max_age=0.0) is True
+    assert _rel(idx, "bar") == ["b.s"]
+
+
+def test_reindex_file_from_buffer_text_is_authoritative_until_disk_reindex(tmp_path: Path):
+    _write(tmp_path, {"a.s": ".proc foo\n rts\n.endproc\n"})
+    idx = WorkspaceIndex(tmp_path, cache=False)
+    idx.reindex()
+    path = tmp_path / "a.s"
+
+    idx.reindex_file(path, text=".proc foo\n rts\n.endproc\n.proc from_buffer\n rts\n.endproc\n")
+    assert _rel(idx, "from_buffer") == ["a.s"]
+    # The disk file is unchanged; a refresh must not clobber the buffer's view.
+    assert idx.refresh() is False
+    assert _rel(idx, "from_buffer") == ["a.s"]
+    # Editing the file on disk while a buffer is open does not either.
+    path.write_text(".proc foo\n rts\n.endproc\n; touched\n")
+    idx.refresh()
+    assert _rel(idx, "from_buffer") == ["a.s"]
+    # Reindexing from disk (didClose) makes the file authoritative again.
+    idx.reindex_file(path)
+    assert idx.lookup("from_buffer") == []
+    assert _rel(idx, "foo") == ["a.s"]
+
+
+def test_reindex_file_from_buffer_text_never_writes_the_cache(tmp_path: Path):
+    _write(tmp_path, {"a.s": ".proc foo\n rts\n.endproc\n"})
+    idx = WorkspaceIndex(tmp_path, cache=True)
+    idx.reindex()
+    cache_files = sorted(p.name for p in (tmp_path / ".ca65-ls" / "cache").glob("*.pkl"))
+    (tmp_path / "b.s").write_text("b: rts\n")
+    idx.reindex_file(tmp_path / "b.s", text=".proc from_buffer\n rts\n.endproc\n")
+    assert sorted(p.name for p in (tmp_path / ".ca65-ls" / "cache").glob("*.pkl")) == cache_files
+    # And a later disk reindex does not pick a stale entry up either.
+    idx.reindex_file(tmp_path / "b.s")
+    assert _rel(idx, "b") == ["b.s"]
+
+
+def test_reindex_file_of_a_deleted_path_drops_symbols_and_references(tmp_path: Path):
+    _write(tmp_path, {"a.s": ".proc foo\n rts\n.endproc\n", "b.s": "bar:\n jsr foo\n"})
+    idx = WorkspaceIndex(tmp_path, cache=False)
+    idx.reindex()
+    assert idx.references("foo")
+    (tmp_path / "b.s").unlink()
+    idx.reindex_file(tmp_path / "b.s")
+    assert idx.lookup("bar") == []
+    assert idx.references("foo") == []
+    assert idx.stats["files"] == 1
+
+
+def test_refresh_reloads_dbg_when_it_changes(fresh_repo: Path):
+    idx = WorkspaceIndex(fresh_repo, cache=False)
+    idx.reindex()
+    dbg = fresh_repo / "build" / "test_repo.dbg"
+    [lib_export] = [s for s in idx.lookup("lib_export") if s.uri.endswith("lib.s")]
+    assert lib_export.address == 0x822
+
+    saved = dbg.read_bytes()
+    dbg.unlink()
+    assert idx.refresh() is True
+    [lib_export] = [s for s in idx.lookup("lib_export") if s.uri.endswith("lib.s")]
+    assert lib_export.address is None
+
+    dbg.write_bytes(saved)
+    assert idx.refresh() is True
+    [lib_export] = [s for s in idx.lookup("lib_export") if s.uri.endswith("lib.s")]
+    assert lib_export.address == 0x822
+    # Re-enrichment keeps the name index and the per-file lists consistent.
+    assert any(s is lib_export for s in idx.all_symbols())
+
+
+def test_exports_of_reads_every_export_directive(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "a.s": (
+                ".export foo, bar\n"
+                ".exportzp zp1 ; comment\n"
+                ".GLOBAL g1\n"
+                ".export alias := $1234\n"
+                ".proc foo\n rts\n.endproc\n"
+            )
+        },
+    )
+    idx = WorkspaceIndex(tmp_path, cache=False)
+    idx.reindex()
+    uri = (tmp_path / "a.s").resolve().as_uri()
+    assert idx.exports_of(uri) == {"foo", "bar", "zp1", "g1", "alias"}
+    assert idx.exports_of("file:///nowhere.s") == frozenset()
+
+
+def test_exports_survive_the_cache_round_trip(tmp_path: Path):
+    _write(tmp_path, {"a.s": ".export foo\n.proc foo\n rts\n.endproc\n"})
+    WorkspaceIndex(tmp_path, cache=True).reindex()
+    idx = WorkspaceIndex(tmp_path, cache=True)
+    idx.reindex()
+    assert idx.stats["cache_hits"] == 1
+    assert idx.exports_of((tmp_path / "a.s").resolve().as_uri()) == {"foo"}
+
+
+def test_changed_on_disk(tmp_path: Path):
+    _write(tmp_path, {"a.s": ".proc foo\n rts\n.endproc\n"})
+    idx = WorkspaceIndex(tmp_path, cache=False)
+    idx.reindex()
+    a = tmp_path / "a.s"
+    assert idx.changed_on_disk(a) is False
+    assert idx.changed_on_disk(tmp_path / "unknown.s") is True
+    a.write_text(".proc foo\n rts\n.endproc\n; edited\n")
+    assert idx.changed_on_disk(a) is True
+    idx.reindex_file(a, text="from_buffer: rts\n")
+    assert idx.changed_on_disk(a) is False, "buffer-backed files are never stale"
+    idx.reindex_file(a)
+    assert idx.changed_on_disk(a) is False

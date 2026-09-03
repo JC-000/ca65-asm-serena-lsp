@@ -6,9 +6,15 @@ Gives Serena's symbolic tools (`find_symbol`, `find_referencing_symbols`, `get_s
 
 ## Status
 
-**v1 complete and in daily use.** Validated end-to-end against a real 224-file / ~12k-symbol C64 project (cold reindex ~1.2s, `.dbg` enrichment active).
+**v1 complete and in daily use.** Validated end-to-end against a real C64 project of 247 sources / 8.6k symbols (cold reindex 1.3s, `.dbg` enrichment active), and regression-tested against ten real CA65 codebases by the [red/green gate](docs/red-green-gate.md).
 
 Upstreaming into `oraios/serena` was declined ([oraios/serena#1504](https://github.com/oraios/serena/pull/1504), closed 2026-05-26 as too niche / third-party-dependency risk), so the integration lives permanently in the fork [`JC-000/serena@feature/ca65-language-server`](https://github.com/JC-000/serena/tree/feature/ca65-language-server), kept rebased onto upstream main.
+
+## Correctness
+
+Every change to the language server, the Serena shim, or the Bash nudge hook goes through `scripts/gate.sh`, which runs five layers: the hook suite, ca65-ls unit tests, a contract suite against ten real `c64-*` projects, a through-Serena layer driven via SolidLSP, and the fork's end-to-end tests.
+
+The corpus expectations are derived from the source text rather than hand-written, so they cannot rot as those projects evolve, and the suite carries oracles that do not share code with what they check. Known defects are recorded as strict `xfail` tests: a fix makes one pass unexpectedly and fails the gate until the marker is removed, so the suite always states what is still owed. See [`docs/red-green-gate.md`](docs/red-green-gate.md) for the convention and the full findings history.
 
 ## Architecture
 
@@ -37,6 +43,9 @@ Upstreaming into `oraios/serena` was declined ([oraios/serena#1504](https://gith
 - `packages/ca65-ls/` — the standalone LSP daemon (Python, pygls). Tests, fixtures, and a `.dbg`-dump debug tool included; see `CLAUDE.md` for dev commands.
 - `scripts/install_local_serena.sh` — points Claude Code's `serena` MCP entry at the fork + this ca65-ls source (project-scoped by default, `--global` optional).
 - `scripts/m4_smoke_test.py [PROJECT]` — exercises the LSP against a real CA65 project and prints a report.
+- `scripts/gate.sh [--quick]` — the red/green gate; run it before and after any change to the tools.
+- `scripts/ca65_bash_nudge.py` — an optional Claude Code hook that nudges assembly work off `grep`/`sed` and onto the symbolic tools (see below).
+- `docs/red-green-gate.md` — the testing convention and the defect history.
 - `docs/research/` — grammar coverage matrix and `.dbg` format spec.
 
 ## Install
@@ -62,10 +71,12 @@ uvx --refresh --from "git+https://github.com/JC-000/serena@feature/ca65-language
 The CA65 language server only starts for projects whose `.serena/project.yml` lists it:
 
 ```yaml
-languages:
+language_servers:
 - python
 - ca65
 ```
+
+(Serena v1.7.0 renamed the key from `languages:`; old configs still auto-migrate, but if a file carries **both** keys the old one is silently ignored, so keep exactly one.)
 
 Without that entry the MCP activates fine but every symbolic tool silently runs without the CA65 backend — the most likely cause of "the CA65 tools aren't being used". Serena loads project configs once at MCP startup, so after editing a `project.yml`, restart Claude Code; re-activating the project or calling `restart_language_server` does not reload it.
 
@@ -79,6 +90,16 @@ Serena ships Claude Code hooks (`serena-hooks activate|remind|auto-approve|clean
 ```
 
 The fork venv's install is editable, so hook changes there take effect immediately — but the hooks now depend on that venv existing.
+
+### The Bash nudge hook (optional)
+
+Serena's own reminder hook is blind to `Bash` on Claude Code: it matches the native `Read` and `Grep` tool *names*, while real CA65 sessions read source almost entirely through shell commands (one measured session ran 203 `Bash` calls and a single `Read`). `scripts/ca65_bash_nudge.py` is a `PreToolUse` hook that closes that gap without touching Serena: after three consecutive shell reads or greps of assembly files **inside a project that has the ca65 backend enabled**, it denies once and names the symbolic tool that would have answered.
+
+It is deliberately narrow, because a false positive blocks real work: it parses the command with a shell-aware tokenizer (heredocs, quotes, newlines, every operator, `cd` and `for` bindings), and counts a read only when it has an assembly operand inside the project that owns the working directory, or is a recursive grep rooted in a project directory that holds assembly. Wire it in `~/.claude/settings.json` with an empty matcher, alongside the Serena hooks, so it sees both `Bash` and `mcp__serena__` calls.
+
+### Agents working in git worktrees
+
+A worktree checkout under `.claude/worktrees/` has no `.serena/` directory of its own, so an agent working there should activate the **worktree path** as its project to get a correct, single-copy index of its own branch. Activating the parent project instead indexes the parent checkout, not the agent's edits. Serena memories are unaffected either way. The indexer skips nested checkouts, so the worktree copies never pollute the parent's index.
 
 ## PyPI
 
