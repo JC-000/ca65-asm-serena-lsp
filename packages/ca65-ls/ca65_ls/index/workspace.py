@@ -27,7 +27,10 @@ yields the ~10x cold-vs-warm ratio the M2 budget asks for.
 from __future__ import annotations
 
 import hashlib
+import os
 import pickle
+import re
+import subprocess
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -61,6 +64,10 @@ except ImportError:  # pragma: no cover
 
 
 SOURCE_SUFFIXES = (".s", ".asm", ".inc")
+# Directories never indexed, gitignore or not.  Matched against every path
+# component, so `foo/build/x.s` is skipped as well as `build/x.s`.  `.claude/`
+# holds worktree copies of whole repos left by agents; `.serena/` is Serena's
+# own state.
 _DEFAULT_IGNORES = (
     "build/",
     "obj/",
@@ -68,8 +75,15 @@ _DEFAULT_IGNORES = (
     "__pycache__/",
     ".git/",
     ".ca65-ls/",
+    ".claude/",
+    ".serena/",
 )
-CACHE_FORMAT_VERSION = 5  # bump if the on-disk cache shape *or* the symbols it stores change
+CACHE_FORMAT_VERSION = 6  # bump if the on-disk cache shape *or* the symbols it stores change
+# v6 (2026-09-02): review fixes.  Nested symbols were stored 2-3x per file (the
+# cache pickled the duplicated list), the per-file entry now carries the names
+# the file `.export`s (used to rank go-to-definition candidates), and the
+# parser clips label bodies to `.endproc` / re-adds `.export` declarators as
+# references, so cached ranges and reference lists are all stale.
 # v5 (2026-08-28): `.export`/`.exportzp`/`.global` declarators whose target is
 # also defined in the same file are no longer emitted as separate symbols (they
 # duplicated the definition -- ~25% of all symbols on c64-https).  The cache key
@@ -168,11 +182,28 @@ def _file_cache_key(path: Path) -> str:
 
 
 def _flatten(symbols: list[BufferSymbol]) -> Iterator[BufferSymbol]:
-    """Walk nested .children trees, yielding every BufferSymbol once."""
-    for sym in symbols:
-        yield sym
-        if sym.children:
-            yield from _flatten(list(sym.children))
+    """Walk nested .children trees, yielding every BufferSymbol exactly once.
+
+    Accepts both shapes a `BufferView` may hand us: a nested tree (the test
+    shim) and an already flat list whose records still carry their
+    `.children` (`Document.flat_symbols()`).  In the second shape every nested
+    symbol is reachable twice -- as a list element and as its parent's child --
+    so records are deduplicated by identity.  Before this, every proc-local
+    label and cheap local was stored two or three times (c64-x25519: 197 of
+    885 records).
+    """
+    seen: set[int] = set()
+
+    def walk(items: list[BufferSymbol]) -> Iterator[BufferSymbol]:
+        for sym in items:
+            if id(sym) in seen:
+                continue
+            seen.add(id(sym))
+            yield sym
+            if sym.children:
+                yield from walk(list(sym.children))
+
+    yield from walk(symbols)
 
 
 def _load_gitignore(project_root: Path):  # -> pathspec.PathSpec | None
@@ -193,31 +224,196 @@ def _load_gitignore(project_root: Path):  # -> pathspec.PathSpec | None
         return None
 
 
-def _is_ignored(rel_posix: str, spec) -> bool:
-    """Combine .gitignore (if any) with our default build-ish exclusions."""
-    if spec is not None and spec.match_file(rel_posix):
-        return True
+def _is_default_ignored(rel_posix: str) -> bool:
+    """True if any path component is one of our built-in excluded directories."""
     for pat in _DEFAULT_IGNORES:
         if rel_posix.startswith(pat) or f"/{pat}" in f"/{rel_posix}":
             return True
     return False
 
 
-def _iter_source_files(project_root: Path) -> Iterator[Path]:
-    """Yield candidate `.s/.asm/.inc` files, respecting .gitignore + defaults."""
-    spec = _load_gitignore(project_root)
-    for path in project_root.rglob("*"):
+def _is_ignored(rel_posix: str, spec) -> bool:
+    """Combine .gitignore (if any) with our default build-ish exclusions.
+
+    `rel_posix` is a path relative to the project root; a trailing "/" marks
+    a directory.  Every ancestor directory is tested against the gitignore
+    spec too, because pathspec answers only for the exact path it is given:
+    `.claude/*` matches `.claude/worktrees` but not
+    `.claude/worktrees/agent-1/src/a.s`, whereas git ignores everything below
+    an ignored directory.
+    """
+    if _is_default_ignored(rel_posix):
+        return True
+    if spec is None:
+        return False
+    if spec.match_file(rel_posix):
+        return True
+    parts = rel_posix.rstrip("/").split("/")
+    for depth in range(1, len(parts)):
+        ancestor = "/".join(parts[:depth])
+        if spec.match_file(ancestor) or spec.match_file(ancestor + "/"):
+            return True
+    return False
+
+
+def _git_submodules(project_root: Path) -> list[str]:
+    """Relative paths of this level's submodules (index mode 160000).
+
+    `git ls-files -co` reports a submodule as a single gitlink entry and never
+    descends, and `--recurse-submodules` is incompatible with `-o`, so each
+    one has to be enumerated in its own right.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "ls-files", "-s", "-z"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    out: list[str] = []
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        # "<mode> <sha> <stage>\t<path>"
+        meta, _, rel = os.fsdecode(raw).partition("\t")
+        if rel and meta.startswith("160000"):
+            out.append(rel)
+    return out
+
+
+def _git_source_files(project_root: Path, _seen: set[str] | None = None) -> list[Path] | None:
+    """Enumerate candidate sources with git, or None if git cannot answer.
+
+    `git ls-files -co --exclude-standard` lists tracked plus untracked files
+    the way git itself sees them: `.gitignore` at every level, `.git/info/
+    exclude` and the user's global excludes file are all honoured, and nested
+    checkouts (agent worktrees under `.claude/worktrees/`) are not descended
+    into.  Paths come back relative to `project_root` even when the root is a
+    subdirectory of the work tree.
+
+    Submodules are listed separately and recursed into, because git reports
+    each as one gitlink entry.  Without that, c64-https lost its `ip65` and
+    `libs/` submodules -- 247 files down to 67.  An uninitialised submodule
+    (empty directory, no `.git`) simply contributes nothing.
+    """
+    seen = set() if _seen is None else _seen
+    try:
+        key = str(project_root.resolve())
+    except OSError:
+        key = str(project_root)
+    if key in seen:
+        return []
+    seen.add(key)
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "ls-files", "-co", "--exclude-standard", "-z"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    out: list[Path] = []
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = os.fsdecode(raw)
+        if not rel.lower().endswith(SOURCE_SUFFIXES):
+            continue
+        if _is_default_ignored(rel):
+            continue
+        path = project_root / rel
+        # Tracked files can be deleted from the work tree without being
+        # removed from the index; git still lists them.
         if not path.is_file():
             continue
-        if path.suffix.lower() not in SOURCE_SUFFIXES:
+        out.append(path)
+
+    for rel in _git_submodules(project_root):
+        if _is_default_ignored(rel + "/"):
             continue
-        try:
-            rel = path.relative_to(project_root).as_posix()
-        except ValueError:  # pragma: no cover
+        sub_root = project_root / rel
+        if not (sub_root / ".git").exists():
+            continue  # not initialised
+        sub_files = _git_source_files(sub_root, seen)
+        if sub_files:
+            out.extend(sub_files)
+    return sorted(out)
+
+
+def _walk_source_files(project_root: Path) -> list[Path]:
+    """Filesystem walk used when git is unavailable or the root is not a
+    checkout.  Ignored directories are pruned, so a worktree copy under
+    `.claude/` is never even entered.  Sorted for determinism.
+
+    Directory symlinks are deliberately not followed (and `git ls-files`
+    lists a symlink as one entry, so git mode does not descend either).  A
+    link into the project adds nothing the walk does not already reach; a
+    link out of it (c64-wireguard's `ip65 -> ../c64-https/ip65`) would index
+    another project's files under URIs the server resolves to paths outside
+    this workspace root, breaking `index_for` and every same-file check.
+    """
+    spec = _load_gitignore(project_root)
+    out: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(project_root):
+        rel_dir = Path(dirpath).relative_to(project_root).as_posix()
+        keep: list[str] = []
+        for d in sorted(dirnames):
+            rel = f"{rel_dir}/{d}" if rel_dir != "." else d
+            if not _is_ignored(rel + "/", spec):
+                keep.append(d)
+        dirnames[:] = keep
+        for f in sorted(filenames):
+            if not f.lower().endswith(SOURCE_SUFFIXES):
+                continue
+            rel = f"{rel_dir}/{f}" if rel_dir != "." else f
+            if _is_ignored(rel, spec):
+                continue
+            path = Path(dirpath) / f
+            if path.is_file():
+                out.append(path)
+    return sorted(out)
+
+
+def _iter_source_files(project_root: Path) -> Iterator[Path]:
+    """Yield candidate `.s/.asm/.inc` files, in sorted order, respecting
+    .gitignore + defaults.  Uses git when the root is inside a work tree."""
+    files = _git_source_files(project_root)
+    if files is None:
+        files = _walk_source_files(project_root)
+    yield from files
+
+
+_EXPORT_LINE_RE = re.compile(r"^\s*\.(?:export|exportzp|global|globalzp)\s+(.*?)\s*(?:;.*)?$", re.I)
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _exported_names(text: str) -> frozenset[str]:
+    """Names a file makes visible to other translation units via
+    `.export` / `.exportzp` / `.global` / `.globalzp`.
+
+    The parser suppresses `.export foo` declarators when `foo` is defined in
+    the same file (they duplicated the definition), so the symbol list cannot
+    tell us which file exports a name.  A line-level scan is enough here: the
+    result only ranks go-to-definition candidates, it never creates symbols.
+    """
+    names: set[str] = set()
+    for line in text.splitlines():
+        m = _EXPORT_LINE_RE.match(line)
+        if not m:
             continue
-        if _is_ignored(rel, spec):
-            continue
-        yield path
+        for item in m.group(1).split(","):
+            ident = _IDENT_RE.match(item.strip())
+            if ident:
+                names.add(ident.group(0))
+    return frozenset(names)
 
 
 def _scope_matches(reference_scope: tuple[str, ...], symbol_scope: tuple[str, ...]) -> bool:
@@ -294,6 +490,17 @@ class _CachedFileEntry:
     symbols: list[BufferSymbol]
     references: list[tuple[str, Range, tuple[str, ...]]]
     format_version: int = CACHE_FORMAT_VERSION
+    exports: frozenset[str] = frozenset()
+
+
+#: (mtime_ns, size) of a file as last ingested; None when the entry came from
+#: an editor buffer rather than from disk.
+_Signature = tuple[int, int] | None
+
+
+def _signature(path: Path) -> tuple[int, int]:
+    st = path.stat()
+    return (st.st_mtime_ns, st.st_size)
 
 
 class WorkspaceIndex:
@@ -330,6 +537,13 @@ class WorkspaceIndex:
         # surgically remove a file's entries before re-adding.
         self._symbols_by_uri: dict[str, list[WorkspaceSymbol]] = {}
         self._references_by_uri: dict[str, list[SymbolReference]] = {}
+        # Names each file `.export`s, for ranking definition candidates.
+        self._exports_by_uri: dict[str, frozenset[str]] = {}
+        # On-disk (mtime_ns, size) each file was ingested at, or None when the
+        # entry reflects an editor buffer and must not be refreshed from disk.
+        self._signature_by_uri: dict[str, _Signature] = {}
+        self._dbg_signature: tuple[tuple[str, int, int], ...] = ()
+        self._last_refresh: float = 0.0
 
         self._stats: dict[str, int | float] = {
             "files": 0,
@@ -358,9 +572,8 @@ class WorkspaceIndex:
         self._references_by_name.clear()
         self._symbols_by_uri.clear()
         self._references_by_uri.clear()
-        self._stats["files"] = 0
-        self._stats["symbols"] = 0
-        self._stats["references"] = 0
+        self._exports_by_uri.clear()
+        self._signature_by_uri.clear()
         self._stats["cache_hits"] = 0
         self._stats["cache_misses"] = 0
 
@@ -371,26 +584,108 @@ class WorkspaceIndex:
         for path in _iter_source_files(self.project_root):
             self._ingest_file(path)
 
+        self._recount()
+        self._last_refresh = time.monotonic()
         self._stats["last_reindex_seconds"] = time.perf_counter() - t0
 
-    def reindex_file(self, path: Path) -> None:
-        """Re-parse a single file. Cheap path for save/didChange handlers."""
+    def reindex_file(self, path: Path, text: str | None = None) -> None:
+        """Re-parse a single file.  Cheap path for the didOpen / didChange /
+        didSave / didChangeWatchedFiles handlers.
+
+        :param text: the editor's buffer contents.  When given, the file is
+            parsed from this text rather than from disk, nothing is written
+            to the cache, and `refresh()` leaves the entry alone until the
+            file is reindexed from disk again (the didClose handler does
+            that).  When omitted and the file no longer exists, its symbols
+            and references are simply dropped.
+        """
         path = Path(path).resolve()
         uri = path.as_uri()
-        # Drop existing entries from this file.
-        for sym in self._symbols_by_uri.pop(uri, []):
-            bucket = self._symbols_by_name.get(sym.name, [])
-            self._symbols_by_name[sym.name] = [s for s in bucket if s.uri != uri]
-            if not self._symbols_by_name[sym.name]:
-                del self._symbols_by_name[sym.name]
-        for ref in self._references_by_uri.pop(uri, []):
-            bucket = self._references_by_name.get(ref.name, [])
-            self._references_by_name[ref.name] = [r for r in bucket if r.uri != uri]
-            if not self._references_by_name[ref.name]:
-                del self._references_by_name[ref.name]
-        # Add fresh entries.
-        if path.is_file():
-            self._ingest_file(path, single_file=True)
+        self._drop_file(uri)
+        if text is not None:
+            self._ingest_text(path, text)
+        elif path.is_file():
+            self._ingest_file(path)
+        self._recount()
+
+    def refresh(self, max_age: float | None = None) -> bool:
+        """Bring the index in line with the files on disk without a full
+        rebuild: pick up created files, reparse modified ones, drop deleted
+        ones, and reload the `.dbg` enrichers if they changed.
+
+        Files currently backed by an editor buffer (see `reindex_file(text=)`)
+        are left untouched.  Returns True if anything changed.
+
+        :param max_age: skip the scan entirely if the last one ran fewer than
+            this many seconds ago.  Lets request handlers call this freely.
+        """
+        now = time.monotonic()
+        if max_age is not None and now - self._last_refresh < max_age:
+            return False
+        self._last_refresh = now
+        changed = False
+
+        current: dict[str, Path] = {p.as_uri(): p for p in _iter_source_files(self.project_root)}
+        for uri in list(self._signature_by_uri):
+            if uri in current or self._signature_by_uri[uri] is None:
+                continue
+            self._drop_file(uri)
+            changed = True
+        for uri, path in current.items():
+            old = self._signature_by_uri.get(uri, ())
+            if old is None:
+                continue  # buffer-backed
+            try:
+                sig = _signature(path)
+            except OSError:
+                continue
+            if old == sig:
+                continue
+            self._drop_file(uri)
+            self._ingest_file(path)
+            changed = True
+
+        if self._dbg_signature != self._current_dbg_signature():
+            self.reload_dbg()
+            changed = True
+
+        if changed:
+            self._recount()
+        return changed
+
+    def reload_dbg(self) -> None:
+        """Re-read the `.dbg` files and re-enrich every stored symbol with
+        the new addresses/segments/sizes.  Symbols themselves are unchanged."""
+        self._reload_dbg()
+        for uri, syms in self._symbols_by_uri.items():
+            fresh = [self._promote(s, uri) for s in syms]
+            self._symbols_by_uri[uri] = fresh
+        self._symbols_by_name.clear()
+        for syms in self._symbols_by_uri.values():
+            for ws in syms:
+                self._symbols_by_name.setdefault(ws.name, []).append(ws)
+
+    def changed_on_disk(self, path: Path) -> bool:
+        """True if `path` is unknown to the index or its on-disk stat differs
+        from the one it was ingested at.  A file the editor has just opened
+        with new contents is a strong hint that the project changed on disk
+        behind our back (an agent wrote several files), so callers use it to
+        force a `refresh()` past the throttle.  Buffer-backed files are never
+        stale."""
+        uri = Path(path).resolve().as_uri()
+        if uri not in self._signature_by_uri:
+            return True
+        old = self._signature_by_uri[uri]
+        if old is None:
+            return False
+        try:
+            return _signature(Path(path).resolve()) != old
+        except OSError:
+            return True
+
+    def exports_of(self, uri: str) -> frozenset[str]:
+        """Names the file at `uri` exports (`.export`/`.exportzp`/`.global`)."""
+        return self._exports_by_uri.get(uri, frozenset())
 
     def lookup(self, name: str) -> list[WorkspaceSymbol]:
         """All definition-site WorkspaceSymbols with this exact name."""
@@ -466,12 +761,49 @@ class WorkspaceIndex:
         self._dbg = _DbgLookup()
         files = _find_dbg_files(self.project_root)
         self._stats["dbg_files"] = len(files)
+        self._dbg_signature = self._current_dbg_signature(files)
         for f in files:
             try:
                 idx = load_dbg(f)
             except Exception:
                 continue  # broken .dbg shouldn't poison the whole project index
             self._dbg.add_index(idx)
+
+    def _current_dbg_signature(
+        self, files: list[Path] | None = None
+    ) -> tuple[tuple[str, int, int], ...]:
+        out: list[tuple[str, int, int]] = []
+        for f in _find_dbg_files(self.project_root) if files is None else files:
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            out.append((str(f), st.st_mtime_ns, st.st_size))
+        return tuple(out)
+
+    def _drop_file(self, uri: str) -> None:
+        """Remove every symbol and reference the file at `uri` contributed."""
+        for sym in self._symbols_by_uri.pop(uri, []):
+            bucket = self._symbols_by_name.get(sym.name, [])
+            remaining = [s for s in bucket if s.uri != uri]
+            if remaining:
+                self._symbols_by_name[sym.name] = remaining
+            else:
+                self._symbols_by_name.pop(sym.name, None)
+        for ref in self._references_by_uri.pop(uri, []):
+            bucket = self._references_by_name.get(ref.name, [])
+            remaining_refs = [r for r in bucket if r.uri != uri]
+            if remaining_refs:
+                self._references_by_name[ref.name] = remaining_refs
+            else:
+                self._references_by_name.pop(ref.name, None)
+        self._exports_by_uri.pop(uri, None)
+        self._signature_by_uri.pop(uri, None)
+
+    def _recount(self) -> None:
+        self._stats["files"] = len(self._signature_by_uri)
+        self._stats["symbols"] = sum(len(v) for v in self._symbols_by_uri.values())
+        self._stats["references"] = sum(len(v) for v in self._references_by_uri.values())
 
     def _cache_dir(self) -> Path:
         return self.project_root / ".ca65-ls" / "cache"
@@ -512,10 +844,12 @@ class WorkspaceIndex:
         except OSError:
             pass  # cache is best-effort
 
-    def _ingest_file(self, path: Path, *, single_file: bool = False) -> None:
-        """Parse one file (cache-aware) and merge its entries into the indexes."""
+    def _ingest_file(self, path: Path) -> None:
+        """Parse one file from disk (cache-aware) and merge its entries into
+        the indexes."""
         try:
             key = _file_cache_key(path)
+            sig = _signature(path)
         except OSError:
             return
 
@@ -524,6 +858,7 @@ class WorkspaceIndex:
             self._stats["cache_hits"] = int(self._stats["cache_hits"]) + 1
             buffer_symbols = cached.symbols
             references = cached.references
+            exports = cached.exports
         else:
             self._stats["cache_misses"] = int(self._stats["cache_misses"]) + 1
             try:
@@ -535,21 +870,45 @@ class WorkspaceIndex:
                 # Parser layer not ready and no shim was provided. Record the
                 # file in stats but contribute no symbols; we'll pick it up on
                 # the next reindex once Document lands.
-                self._stats["files"] = int(self._stats["files"]) + 1
+                self._signature_by_uri[path.as_uri()] = sig
                 return
             buffer_symbols = view.flat_symbols()
             references = view.all_references()
+            exports = _exported_names(text)
             self._save_to_cache(
                 path,
                 _CachedFileEntry(
                     key=key,
                     symbols=list(buffer_symbols),
                     references=list(references),
+                    exports=exports,
                 ),
             )
 
-        self._stats["files"] = int(self._stats["files"]) + 1
-        uri = path.as_uri()
+        self._merge(path.as_uri(), buffer_symbols, references, exports, sig)
+
+    def _ingest_text(self, path: Path, text: str) -> None:
+        """Parse one file from editor-buffer text.  Never touches the cache:
+        the cache key is the on-disk stat, which this text need not match."""
+        view = self._parser(path, text)
+        if view is None:
+            self._signature_by_uri[path.as_uri()] = None
+            return
+        self._merge(
+            path.as_uri(), view.flat_symbols(), view.all_references(), _exported_names(text), None
+        )
+
+    def _merge(
+        self,
+        uri: str,
+        buffer_symbols: list[BufferSymbol],
+        references: list,
+        exports: frozenset[str],
+        sig: _Signature,
+    ) -> None:
+        """Promote one file's parse result into the name-keyed indexes."""
+        self._signature_by_uri[uri] = sig
+        self._exports_by_uri[uri] = exports
 
         ws_symbols: list[WorkspaceSymbol] = []
         for bs in _flatten(buffer_symbols):
@@ -557,7 +916,6 @@ class WorkspaceIndex:
             ws_symbols.append(ws)
             self._symbols_by_name.setdefault(ws.name, []).append(ws)
         self._symbols_by_uri[uri] = ws_symbols
-        self._stats["symbols"] = int(self._stats["symbols"]) + len(ws_symbols)
 
         ref_records: list[SymbolReference] = []
         for item in references:
@@ -579,16 +937,11 @@ class WorkspaceIndex:
             ref_records.append(ref)
             self._references_by_name.setdefault(ref.name, []).append(ref)
         self._references_by_uri[uri] = ref_records
-        self._stats["references"] = int(self._stats["references"]) + len(ref_records)
 
-        if single_file:
-            # In incremental mode we may not have reloaded .dbg, which is
-            # fine: the cached enrichment from the last full reindex still
-            # applies to the freshly-ingested records.
-            pass
-
-    def _promote(self, bs: BufferSymbol, uri: str) -> WorkspaceSymbol:
-        """Lift a BufferSymbol to a WorkspaceSymbol, enriching with .dbg if available."""
+    def _promote(self, bs: BufferSymbol | WorkspaceSymbol, uri: str) -> WorkspaceSymbol:
+        """Lift a BufferSymbol to a WorkspaceSymbol, enriching with .dbg if
+        available.  Also accepts an existing WorkspaceSymbol (re-enrichment
+        after a `.dbg` reload)."""
         rec = self._dbg.lookup(bs.name, bs.scope_path)
         address = getattr(rec, "addr", None) if rec is not None else None
         segment = getattr(rec, "segment", None) if rec is not None else None

@@ -4,6 +4,8 @@ handlers and documented lifecycle; RED = defects from the 2026-09-02 review
 
 from __future__ import annotations
 
+import logging
+import sys
 import time
 from pathlib import Path
 
@@ -11,7 +13,7 @@ import pytest
 
 from ca65_ls.buffer.document import Document
 
-from .conftest import started, write_project
+from .conftest import create, started, write_project
 
 red = pytest.mark.xfail(strict=True, raises=AssertionError)
 
@@ -103,25 +105,16 @@ def _walk(nodes):
 # ---------------------------------------------------------------- RED
 
 
-@red
-def test_first_definition_request_is_fast(fixture_copy, data_dir):
-    """F09: the shim inherits SolidLSP's fixed 2 s wait before the first
-    cross-file request although ca65-ls indexes synchronously in initialize.
-    Every Serena session pays it once per server start."""
-    with started(fixture_copy, data_dir) as ls:
-        main = (fixture_copy / "src/main.s").read_text().splitlines()
-        line = next(i for i, ln in enumerate(main) if "jsr" in ln and "lib_export" in ln)
-        t0 = time.perf_counter()
-        ls.request_definition("src/main.s", line, main[line].index("lib_export") + 1)
-        assert time.perf_counter() - t0 < 0.5
+# (none open as of 2026-09-01; the 2026-09-02 review's F04/F09/F14 all flipped)
 
 
-@red
+# ---------------------------------------------------------------- GREEN (fixes of 2026-09-01)
+
+
 def test_new_file_on_disk_is_indexed_without_restart(fixture_copy, data_dir):
-    """F04: the workspace index only refreshes on didSave, which Serena never
-    sends; didChange and didChangeWatchedFiles do nothing. After an agent
-    creates or edits a routine, definition/references stay stale until the
-    language server is restarted."""
+    """F04 (fixed 2026-09-01 in ca65-ls server.py): the index used to refresh
+    only on didSave, which Serena never sends. It now reindexes on didChange
+    and registers for workspace/didChangeWatchedFiles."""
     with started(fixture_copy, data_dir) as ls:
         write_project(
             fixture_copy,
@@ -137,10 +130,23 @@ def test_new_file_on_disk_is_indexed_without_restart(fixture_copy, data_dir):
         assert [Path(d["relativePath"]).as_posix() for d in defs] == ["src/new_routine.s"]
 
 
-@red
+def test_first_definition_request_is_fast(fixture_copy, data_dir):
+    """F09 (fixed 2026-09-01): the shim overrides SolidLSP's fixed 2 s wait
+    before the first cross-file request, since ca65-ls indexes synchronously
+    in initialize."""
+    with started(fixture_copy, data_dir) as ls:
+        main = (fixture_copy / "src/main.s").read_text().splitlines()
+        line = next(i for i, ln in enumerate(main) if "jsr" in ln and "lib_export" in ln)
+        t0 = time.perf_counter()
+        ls.request_definition("src/main.s", line, main[line].index("lib_export") + 1)
+        assert time.perf_counter() - t0 < 0.5
+
+
 def test_symlinked_project_root_yields_relative_paths(tmp_path, data_dir):
-    """F14: a project opened through a symlink reports `../../..` relative
-    paths and request_full_symbol_tree raises ValueError."""
+    """F14 (fixed 2026-09-01 in the shim): a project opened through a symlink
+    used to report `../../..` relative paths and request_full_symbol_tree
+    raised ValueError, because ca65-ls returns resolved URIs while SolidLSP
+    compared them against the unresolved root. The shim now resolves the root."""
     real = write_project(tmp_path / "real", {"src/a.s": ".proc foo\n rts\n.endproc\n"})
     link = tmp_path / "link"
     link.symlink_to(real)
@@ -153,3 +159,136 @@ def test_symlinked_project_root_yields_relative_paths(tmp_path, data_dir):
             n.get("location", {}).get("relativePath") or n.get("relativePath") for n in _walk(tree)
         }
         assert not any(p and ".." in Path(p).parts for p in paths), paths
+
+
+def test_symlinked_root_definition_paths_are_relative(tmp_path, data_dir):
+    """F14 companion: definitions through a symlinked root come back as clean
+    project-relative paths, not `../../..` walks to the real location."""
+    real = write_project(
+        tmp_path / "real",
+        {
+            "src/a.s": ".import foo\n.proc bar\n jsr foo\n rts\n.endproc\n",
+            "src/b.s": ".export foo\n.proc foo\n rts\n.endproc\n",
+        },
+    )
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    with started(link, data_dir) as ls:
+        defs = ls.request_definition("src/a.s", 2, 6)
+        assert [Path(d["relativePath"]).as_posix() for d in defs] == ["src/b.s"]
+
+
+def test_worktree_copies_are_invisible_without_gitignore(fixture_copy, data_dir):
+    """F07: `.claude/worktrees/agent-*/` holds full copies of the project.
+    Serena's own walk (full symbol tree, find_file, search_for_pattern) must
+    skip `.claude` even when the project's .gitignore does not mention it and
+    no ignored path is configured."""
+    write_project(
+        fixture_copy,
+        {".claude/worktrees/agent-1/src/x.s": ".proc ghost\n rts\n.endproc\n"},
+    )
+    gitignore = fixture_copy / ".gitignore"
+    if gitignore.exists():
+        assert ".claude" not in gitignore.read_text()
+    with started(fixture_copy, data_dir) as ls:
+        names = {n["name"] for n in _walk(ls.request_full_symbol_tree())}
+        assert "ghost" not in names
+        assert "main" in names  # the walk still sees the real sources
+        assert ls.is_ignored_path(".claude/worktrees/agent-1/src/x.s")
+        for dirname in (".claude", ".serena", ".ca65-ls", "build", "obj"):
+            assert ls.is_ignored_dirname(dirname), dirname
+
+
+def test_missing_launcher_fails_fast_with_install_hint(fixture_copy, data_dir):
+    """F12: a launcher that does not exist is reported before anything is
+    spawned, naming the install command, instead of a generic initialize
+    failure whose cause is on a separate log line."""
+    ls = create(fixture_copy, data_dir, settings={"ls_base_cmd": ["/nonexistent/ca65-python"]})
+    t0 = time.perf_counter()
+    try:
+        with pytest.raises(RuntimeError) as exc:
+            ls.start()
+    finally:
+        ls.stop()
+    assert time.perf_counter() - t0 < 2.0
+    message = str(exc.value)
+    assert "/nonexistent/ca65-python" in message
+    assert "not found" in message
+    assert "pip install ca65-ls" in message
+    assert "uv pip install -e ~/Documents/ca65-asm-serena-lsp/packages/ca65-ls" in message
+
+
+def test_hanging_server_fails_within_initialize_timeout(fixture_copy, data_dir):
+    """F12: a ca65-ls that never answers `initialize` used to take the full
+    request timeout (235 s in the review). The shim bounds initialize
+    separately (`initialize_timeout`, default 60 s)."""
+    ls = create(
+        fixture_copy,
+        data_dir,
+        settings={
+            "ls_base_cmd": [sys.executable],
+            "ls_args": ["-c", "import time; time.sleep(60)"],
+            "initialize_timeout": 2,
+        },
+    )
+    t0 = time.perf_counter()
+    try:
+        with pytest.raises(RuntimeError) as exc:
+            ls.start()
+    finally:
+        ls.stop()
+    assert time.perf_counter() - t0 < 10.0
+    assert "did not answer `initialize` within 2 s" in str(exc.value)
+    assert "initialize_timeout" in str(exc.value)
+
+
+def test_crashing_server_reports_install_hint(fixture_copy, data_dir):
+    """F12: a ca65-ls that exits during startup (e.g. a broken install) is
+    reported as such, with the install command, within seconds."""
+    ls = create(
+        fixture_copy,
+        data_dir,
+        settings={
+            "ls_base_cmd": [sys.executable],
+            "ls_args": [
+                "-c",
+                "import sys; sys.stderr.write('boom: simulated crash\\n'); sys.exit(3)",
+            ],
+        },
+    )
+    t0 = time.perf_counter()
+    try:
+        with pytest.raises(RuntimeError) as exc:
+            ls.start()
+    finally:
+        ls.stop()
+    assert time.perf_counter() - t0 < 10.0
+    message = str(exc.value)
+    assert "exited during `initialize`" in message or "terminated immediately" in message
+    assert "pip install ca65-ls" in message or "terminated immediately" in message
+
+
+def test_generic_request_timeout_is_restored_after_initialize(fixture_copy, data_dir):
+    """The initialize bound must not leak into ordinary requests."""
+    with started(fixture_copy, data_dir, timeout=77.0, settings={"initialize_timeout": 5}) as ls:
+        assert ls.server._request_timeout == 77.0  # noqa: SLF001 (no public getter)
+
+
+def test_pygls_protocol_chatter_is_not_logged_as_error():
+    """F10 (shim side): stderr lines that pygls emits for its own protocol
+    traffic are chatter even when the payload mentions `error`; the default
+    classifier flagged them as ERROR. Real errors keep their level."""
+    from solidlsp.language_servers.ca65_language_server import Ca65LanguageServer
+
+    classify = Ca65LanguageServer._determine_log_level
+    chatter = 'INFO:pygls.protocol.json_rpc:Sending data: {"name": "ip65_error", "kind": 12}'
+    assert classify(chatter) == logging.DEBUG
+    assert classify("DEBUG:pygls.server:Received data") == logging.DEBUG
+    assert classify("INFO:ca65_ls.index.workspace:indexed 42 files") == logging.INFO
+    assert classify("ERROR:ca65_ls.server:reindex failed") == logging.ERROR
+    assert (
+        classify(
+            "Traceback (most recent call last): ... ModuleNotFoundError: No module named 'ca65_ls'"
+        )
+        == logging.ERROR
+    )

@@ -164,49 +164,34 @@ def _to_lsp_workspace_symbol(ws: WorkspaceSymbol) -> lsp.WorkspaceSymbol:
     )
 
 
-# Symbol kinds that we treat as the "canonical definition" when deduplicating
-# workspace_symbol results — see _dedupe_workspace_symbols.
-_CANONICAL_DEF_KINDS = (
-    SymbolKind.PROC,
-    SymbolKind.SCOPE,
-    SymbolKind.MACRO,
-    SymbolKind.STRUCT,
-    SymbolKind.UNION,
-    SymbolKind.ENUM,
-    SymbolKind.LABEL,
-    SymbolKind.CONSTANT,
-    SymbolKind.FIELD,
-    SymbolKind.CHEAP_LOCAL,
-    SymbolKind.ANON_LABEL,
-    SymbolKind.EXPORT,  # .export name — the declarator IS the def if there's no body
-    SymbolKind.IMPORT,  # .import — last resort, externally defined
-)
-
-
 def _dedupe_workspace_symbols(symbols: list[WorkspaceSymbol]) -> list[WorkspaceSymbol]:
-    """Collapse the (declarator, definition) pairs that ca65 emits.
+    """Drop records that describe the same declaration site twice.
 
-    For every `.export hkdf_extract` declarator + `hkdf_extract:` label, we
-    return only the canonical definition.  Same name in two different scopes
-    or two different files stays as two entries — we key dedup on
-    (uri, qualified_name) so different files keep distinct hits.
-
-    Ranking: pick the entry whose kind appears earliest in
-    _CANONICAL_DEF_KINDS.  Ties broken by first-seen.
+    This used to collapse every (uri, qualified name) pair to one "canonical"
+    kind, which hid two things: the `.export` declarator / definition pairs
+    (the parser now suppresses those itself, see
+    `_suppress_redundant_exports`) and the indexer storing every nested symbol
+    two or three times (fixed 2026-09-02 in `WorkspaceIndex`).  It also
+    merged genuinely distinct symbols -- two `@loop` cheap locals under
+    different parent labels share a qualified name -- so it is now keyed on
+    the declaration site and only removes exact repeats.
     """
-    rank = {k: i for i, k in enumerate(_CANONICAL_DEF_KINDS)}
-    best: dict[tuple[str, str], WorkspaceSymbol] = {}
-    order: list[tuple[str, str]] = []
+    seen: set[tuple[str, str, SymbolKind, tuple[str, ...], int, int]] = set()
+    out: list[WorkspaceSymbol] = []
     for sym in symbols:
-        key = (sym.uri, _qualified_name(sym))
-        prev = best.get(key)
-        if prev is None:
-            best[key] = sym
-            order.append(key)
-        else:
-            if rank.get(sym.kind, len(rank)) < rank.get(prev.kind, len(rank)):
-                best[key] = sym
-    return [best[k] for k in order]
+        key = (
+            sym.uri,
+            sym.name,
+            sym.kind,
+            sym.scope_path,
+            sym.selection_range.start.line,
+            sym.selection_range.start.character,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(sym)
+    return out
 
 
 def _qualified_name(ws: WorkspaceSymbol) -> str:
@@ -230,18 +215,146 @@ def _path_to_uri(path: Path) -> str:
 _IDENT_RE = re.compile(r"@?[A-Za-z_][A-Za-z0-9_]*")
 
 
-def _identifier_at(document_text: str, position: lsp.Position) -> str | None:
-    """Extract the CA65 identifier under (line, character), if any."""
+# 6502 / 65C02 / 65816 instruction mnemonics.  A cursor on one of these (or
+# on a `.directive`) resolves to the operand that follows, so "go to
+# definition" on the `jsr` of `jsr foo` lands on `foo`.
+_MNEMONICS = frozenset(
+    [
+        "adc",
+        "and",
+        "asl",
+        "bcc",
+        "bcs",
+        "beq",
+        "bit",
+        "bmi",
+        "bne",
+        "bpl",
+        "brk",
+        "bvc",
+        "bvs",
+        "clc",
+        "cld",
+        "cli",
+        "clv",
+        "cmp",
+        "cpx",
+        "cpy",
+        "dec",
+        "dex",
+        "dey",
+        "eor",
+        "inc",
+        "inx",
+        "iny",
+        "jmp",
+        "jsr",
+        "lda",
+        "ldx",
+        "ldy",
+        "lsr",
+        "nop",
+        "ora",
+        "pha",
+        "php",
+        "pla",
+        "plp",
+        "rol",
+        "ror",
+        "rti",
+        "rts",
+        "sbc",
+        "sec",
+        "sed",
+        "sei",
+        "sta",
+        "stx",
+        "sty",
+        "tax",
+        "tay",
+        "tsx",
+        "txa",
+        "txs",
+        "tya",
+        "bra",
+        "phx",
+        "phy",
+        "plx",
+        "ply",
+        "stz",
+        "trb",
+        "tsb",
+        "bbr",
+        "bbs",
+        "rmb",
+        "smb",
+        "stp",
+        "wai",
+        "brl",
+        "cop",
+        "jml",
+        "jsl",
+        "mvn",
+        "mvp",
+        "pea",
+        "pei",
+        "per",
+        "phb",
+        "phd",
+        "phk",
+        "plb",
+        "pld",
+        "rep",
+        "rtl",
+        "sep",
+        "tcd",
+        "tcs",
+        "tdc",
+        "tsc",
+        "txy",
+        "tyx",
+        "wdm",
+        "xba",
+        "xce",
+    ]
+)
+
+
+def _identifier_span_at(document_text: str, position: lsp.Position) -> tuple[int, int, str] | None:
+    """Locate the CA65 identifier the cursor refers to on its line.
+
+    Returns ``(start, end, name)`` in the line, or None.  When the cursor sits
+    on an instruction mnemonic or a `.directive` keyword, the first operand
+    identifier after it is returned instead (if there is one), so a request
+    anywhere on `jsr foo` / `.proc foo` / `.export foo` is about `foo`.
+    """
     lines = document_text.splitlines()
     if position.line >= len(lines):
         return None
     line = lines[position.line]
     if position.character > len(line):
         return None
-    for match in _IDENT_RE.finditer(line):
-        if match.start() <= position.character <= match.end():
-            return match.group(0)
+    matches = list(_IDENT_RE.finditer(line))
+
+    def is_directive(m: re.Match[str]) -> bool:
+        return m.start() > 0 and line[m.start() - 1] == "."
+
+    for i, match in enumerate(matches):
+        if not (match.start() <= position.character <= match.end()):
+            continue
+        word = match.group(0)
+        if (is_directive(match) or word.lower() in _MNEMONICS) and i + 1 < len(matches):
+            operand = matches[i + 1]
+            if not is_directive(operand):
+                return operand.start(), operand.end(), operand.group(0)
+        return match.start(), match.end(), word
     return None
+
+
+def _identifier_at(document_text: str, position: lsp.Position) -> str | None:
+    """Extract the CA65 identifier the cursor refers to, if any."""
+    span = _identifier_span_at(document_text, position)
+    return span[2] if span else None
 
 
 # -------------------------------------------------------------------- server class
@@ -267,8 +380,15 @@ class Ca65LanguageServer(LanguageServer):
             self.workspace_roots.append(root)
         return self.indexes[uri]
 
-    def index_for(self, doc_uri: str) -> WorkspaceIndex | None:
-        """Pick the workspace index whose root is an ancestor of doc_uri."""
+    def index_for(self, doc_uri: str, *, fresh: bool = False) -> WorkspaceIndex | None:
+        """Pick the workspace index whose root is an ancestor of doc_uri.
+
+        With ``fresh=True`` the index is first brought in line with the files
+        on disk (throttled to once per `REFRESH_MAX_AGE` seconds), so a query
+        sees routines that were created or edited outside the editor since
+        the last request.  Serena never sends didSave or file-watcher events,
+        so this is what keeps the index current for its symbolic tools.
+        """
         try:
             doc_path = _uri_to_path(doc_uri).resolve()
         except Exception:
@@ -282,7 +402,15 @@ class Ca65LanguageServer(LanguageServer):
             depth = len(root.parts)
             if best is None or depth > best[0]:
                 best = (depth, self.indexes[_path_to_uri(root)])
-        return best[1] if best else None
+        if best is None:
+            return None
+        if fresh:
+            _refresh_quietly(best[1], REFRESH_MAX_AGE)
+        return best[1]
+
+    def refresh_all(self, max_age: float | None) -> None:
+        for idx in self.indexes.values():
+            _refresh_quietly(idx, max_age)
 
     def doc_or_open(self, uri: str, text: str | None = None) -> Document:
         doc = self.documents.get(uri)
@@ -298,6 +426,70 @@ class Ca65LanguageServer(LanguageServer):
 
 
 server = Ca65LanguageServer()
+
+#: How old the on-disk view of a workspace may be, in seconds, before a query
+#: handler rescans the project for created / modified / deleted files.
+REFRESH_MAX_AGE = 1.0
+
+#: Glob patterns registered with clients that support file watching.
+WATCH_GLOBS = ("**/*.{s,S,asm,ASM,inc,INC}", "**/*.dbg")
+
+
+def _refresh_quietly(idx: WorkspaceIndex, max_age: float | None) -> None:
+    try:
+        idx.refresh(max_age=max_age)
+    except Exception as exc:  # a refresh failure must never break a query
+        log.warning("index refresh failed for %s: %s", idx.project_root, exc)
+
+
+def _reindex_quietly(ls: Ca65LanguageServer, uri: str, text: str | None = None) -> None:
+    idx = ls.index_for(uri)
+    if idx is None:
+        return
+    try:
+        idx.reindex_file(_uri_to_path(uri), text=text)
+    except Exception as exc:
+        log.warning("reindex_file failed for %s: %s", uri, exc)
+
+
+def _apply_content_change(text: str, change: object) -> str:
+    """Apply one didChange content change to `text`.
+
+    Handles both the whole-document form (`text` only) and the incremental
+    form (`range` + `text`), which is what Serena sends for
+    `insert_text_at_position` / `delete_text_between_positions`.  pygls keeps
+    its own copy of the document too; this is the fallback used when the
+    handler is driven without a running protocol (tests).
+    """
+    rng = getattr(change, "range", None)
+    new = getattr(change, "text", "")
+    if rng is None:
+        return new
+    lines = text.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+
+    def offset(pos: lsp.Position) -> int:
+        if pos.line >= len(lines):
+            return len(text)
+        return min(offsets[pos.line] + pos.character, offsets[pos.line + 1])
+
+    return text[: offset(rng.start)] + new + text[offset(rng.end) :]
+
+
+def _document_text_after_change(
+    ls: Ca65LanguageServer, doc: Document, params: lsp.DidChangeTextDocumentParams
+) -> str:
+    """Prefer pygls's own reconciled copy of the document; fall back to
+    applying the changes ourselves."""
+    try:
+        return ls.workspace.get_text_document(params.text_document.uri).source
+    except Exception:
+        text = doc.text
+        for change in params.content_changes:
+            text = _apply_content_change(text, change)
+        return text
 
 
 # -------------------------------------------------------------------- handlers
@@ -322,43 +514,120 @@ def on_initialize(ls: Ca65LanguageServer, params: lsp.InitializeParams) -> None:
             log.warning("Failed to index workspace %s: %s", root, exc)
 
 
+def _client_watches_files(capabilities: lsp.ClientCapabilities | None) -> bool:
+    ws = getattr(capabilities, "workspace", None)
+    watched = getattr(ws, "did_change_watched_files", None)
+    return bool(getattr(watched, "dynamic_registration", False))
+
+
+def _watched_files_registration() -> lsp.RegistrationParams:
+    return lsp.RegistrationParams(
+        registrations=[
+            lsp.Registration(
+                id="ca65-ls.watched-files",
+                method=lsp.WORKSPACE_DID_CHANGE_WATCHED_FILES,
+                register_options=lsp.DidChangeWatchedFilesRegistrationOptions(
+                    watchers=[lsp.FileSystemWatcher(glob_pattern=g) for g in WATCH_GLOBS]
+                ),
+            )
+        ]
+    )
+
+
+@server.feature(lsp.INITIALIZED)
+def on_initialized(ls: Ca65LanguageServer, params: lsp.InitializedParams) -> None:
+    """Ask the client to send `workspace/didChangeWatchedFiles` for sources
+    and `.dbg` files.  There is no static server capability for this; it is
+    dynamic registration only, so clients without it (Serena) fall back to
+    the throttled refresh in `index_for(fresh=True)`."""
+    try:
+        caps = ls.protocol.client_capabilities  # type: ignore[attr-defined]
+    except Exception:
+        caps = None
+    if not _client_watches_files(caps):
+        return
+    try:
+        ls.client_register_capability(_watched_files_registration())
+    except Exception as exc:  # the client may refuse; refresh() still covers us
+        log.debug("watched-files registration failed: %s", exc)
+
+
 @server.feature(lsp.TEXT_DOCUMENT_DID_OPEN)
 def on_did_open(ls: Ca65LanguageServer, params: lsp.DidOpenTextDocumentParams) -> None:
-    ls.doc_or_open(params.text_document.uri, params.text_document.text)
+    """The client's buffer is now authoritative for this file.  Also rescan
+    the workspace: Serena opens a file before every request, and the file --
+    or a sibling it references -- may have been created on disk since the
+    last request.  The rescan is throttled like the query handlers', except
+    when the opened file itself changed on disk since it was indexed: that
+    is the signature of an agent having just written files, so the scan is
+    forced (Serena's full-symbol-tree walk opens hundreds of unchanged files
+    and must not pay for a git call each time)."""
+    uri = params.text_document.uri
+    ls.doc_or_open(uri, params.text_document.text)
+    idx = ls.index_for(uri)
+    if idx is not None:
+        try:
+            stale = idx.changed_on_disk(_uri_to_path(uri))
+        except Exception:
+            stale = True
+        _refresh_quietly(idx, None if stale else REFRESH_MAX_AGE)
+    _reindex_quietly(ls, uri, params.text_document.text)
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_CHANGE)
 def on_did_change(ls: Ca65LanguageServer, params: lsp.DidChangeTextDocumentParams) -> None:
+    """Update the buffer *and* the workspace index from the new text, so
+    definition / references see the edit without a save."""
     uri = params.text_document.uri
     doc = ls.documents.get(uri)
     if doc is None:
         return
-    # We register for full-document sync (see capabilities below), so each
-    # change carries the full new text.
-    new_text = params.content_changes[-1].text  # type: ignore[union-attr]
+    new_text = _document_text_after_change(ls, doc, params)
     doc.update(new_text)
+    _reindex_quietly(ls, uri, new_text)
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_CLOSE)
 def on_did_close(ls: Ca65LanguageServer, params: lsp.DidCloseTextDocumentParams) -> None:
-    ls.documents.pop(params.text_document.uri, None)
+    """Drop the buffer; the on-disk file is authoritative again."""
+    uri = params.text_document.uri
+    ls.documents.pop(uri, None)
+    _reindex_quietly(ls, uri)
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_SAVE)
 def on_did_save(ls: Ca65LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None:
     """Refresh the project index for the saved file and recompute diagnostics."""
     uri = params.text_document.uri
-    idx = ls.index_for(uri)
-    if idx is not None:
-        try:
-            idx.reindex_file(_uri_to_path(uri))
-        except Exception as exc:
-            log.warning("reindex_file failed for %s: %s", uri, exc)
+    _reindex_quietly(ls, uri)
 
     diagnostics = _compute_diagnostics(uri)
     ls.text_document_publish_diagnostics(
         lsp.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics)
     )
+
+
+@server.feature(lsp.WORKSPACE_DID_CHANGE_WATCHED_FILES)
+def on_did_change_watched_files(
+    ls: Ca65LanguageServer, params: lsp.DidChangeWatchedFilesParams
+) -> None:
+    """Created / changed / deleted files on disk.
+
+    Every workspace that owns one of the events is rescanned: new sources are
+    indexed, modified ones reparsed, deleted ones lose their symbols and
+    references, and a changed `.dbg` reloads the linker debug info so
+    addresses stay current (Serena review F05).  Going through `refresh()`
+    rather than reindexing the named file keeps the ignore rules (gitignore,
+    tool directories) authoritative, and a file open in an editor buffer
+    keeps the buffer's symbols.
+    """
+    touched: dict[int, WorkspaceIndex] = {}
+    for event in params.changes:
+        idx = ls.index_for(event.uri)
+        if idx is not None:
+            touched[id(idx)] = idx
+    for idx in touched.values():
+        _refresh_quietly(idx, None)
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DOCUMENT_SYMBOL)
@@ -367,7 +636,7 @@ def on_document_symbol(
 ) -> list[lsp.DocumentSymbol]:
     uri = params.text_document.uri
     doc = ls.doc_or_open(uri)
-    idx = ls.index_for(uri)
+    idx = ls.index_for(uri, fresh=True)
     idx_lookup: dict[tuple[str, tuple[str, ...]], WorkspaceSymbol] | None = None
     if idx is not None:
         # Build a quick (name, scope_path) -> WorkspaceSymbol lookup for THIS
@@ -386,11 +655,117 @@ def on_workspace_symbol(
 ) -> list[lsp.WorkspaceSymbol]:
     # Gather all hits, then collapse (declarator, definition) pairs so the
     # client doesn't see two entries for every `.export name` / `name:` pair.
+    ls.refresh_all(REFRESH_MAX_AGE)
     raw: list[WorkspaceSymbol] = []
     for idx in ls.indexes.values():
         raw.extend(idx.search(params.query))
     deduped = _dedupe_workspace_symbols(raw)
     return [_to_lsp_workspace_symbol(ws) for ws in deduped]
+
+
+_IMPLEMENTATION_KINDS = frozenset(
+    {
+        SymbolKind.PROC,
+        SymbolKind.SCOPE,
+        SymbolKind.MACRO,
+        SymbolKind.STRUCT,
+        SymbolKind.UNION,
+        SymbolKind.ENUM,
+    }
+)
+_LABEL_KINDS = frozenset({SymbolKind.LABEL, SymbolKind.CHEAP_LOCAL, SymbolKind.CONSTANT})
+_DECLARATOR_KINDS = frozenset({SymbolKind.IMPORT, SymbolKind.EXPORT})
+
+
+def _by_kind_preference(candidates: list[WorkspaceSymbol]) -> list[WorkspaceSymbol]:
+    """Implementation kinds, then defining labels, then declarators; stable
+    within a tier."""
+    return (
+        [ws for ws in candidates if ws.kind in _IMPLEMENTATION_KINDS]
+        or [ws for ws in candidates if ws.kind in _LABEL_KINDS]
+        or candidates
+    )
+
+
+def _definition_candidates(
+    idx: WorkspaceIndex, uri: str, doc: Document, position: lsp.Position, name: str
+) -> list[WorkspaceSymbol]:
+    """Rank the definitions of `name` as seen from `position` in `uri`.
+
+    Tiers, first non-empty wins:
+
+    1. definitions in this file lying strictly inside the enclosing routine
+       (proc-local labels, cheap locals) -- a `done:` inside `.proc b` never
+       resolves to another proc's `done:`;
+    2. this file's own definitions.  A label the calling file defines itself
+       beats a `.proc` of the same name in an unrelated file
+       (c64-wireguard `print_string`);
+    3. when this file `.import`s the name, definitions in files that
+       `.export` it;
+    4. everything else, implementation kinds before labels before
+       declarators.
+    """
+    candidates = idx.lookup(name)
+    if not candidates:
+        return []
+
+    enclosing = _enclosing_routine(doc, position, exclude_name=name)
+    if enclosing is not None:
+        local = [
+            ws
+            for ws in candidates
+            if ws.uri == uri and _range_strictly_inside(ws.range, enclosing.range)
+        ]
+        if local:
+            return _by_kind_preference(local)
+
+    own = [ws for ws in candidates if ws.uri == uri and ws.kind not in _DECLARATOR_KINDS]
+    if own:
+        return _by_kind_preference(own)
+
+    imported_here = any(ws.uri == uri and ws.kind == SymbolKind.IMPORT for ws in candidates)
+    if imported_here:
+        exporters = [
+            ws
+            for ws in candidates
+            if ws.uri != uri and ws.kind not in _DECLARATOR_KINDS and name in idx.exports_of(ws.uri)
+        ]
+        if exporters:
+            return _by_proximity(exporters, uri)
+
+    # A declarator is never the answer when a real definition is known: a
+    # `jmp ip65_init` in a stub file must land on the routine, not on the
+    # file's own `.import ip65_init` (adversarial review, 2026-09-02).
+    defined = [ws for ws in candidates if ws.kind not in _DECLARATOR_KINDS]
+    return _by_proximity(defined or candidates, uri)
+
+
+def _shared_prefix_depth(a: str, b: str) -> int:
+    """Number of leading path segments two URIs have in common."""
+    pa, pb = a.split("/"), b.split("/")
+    n = 0
+    for x, y in zip(pa[:-1], pb[:-1], strict=False):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _by_proximity(candidates: list[WorkspaceSymbol], uri: str) -> list[WorkspaceSymbol]:
+    """Nearest definition first, by shared directory prefix with the caller.
+
+    A project can legitimately hold two definitions of a name: c64-wireguard
+    has its own `src/crypto/fe25519.s` *and* the vendored submodule copy in
+    `libs/x25519/src/fe25519.s`.  A call in `src/crypto/x25519.s` means the
+    sibling in its own directory, not the vendored one, even though the
+    vendored one is a `.proc` and the sibling only a label -- so proximity
+    outranks kind here (adversarial review, 2026-09-02).
+    """
+    best = max((_shared_prefix_depth(ws.uri, uri) for ws in candidates), default=0)
+    nearest = [ws for ws in candidates if _shared_prefix_depth(ws.uri, uri) == best]
+    # Proximity first, kind only within the nearest group: a sibling label
+    # must not lose to a `.proc` in a vendored copy.
+    return _by_kind_preference(nearest or candidates)
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DEFINITION)
@@ -400,29 +775,10 @@ def on_definition(ls: Ca65LanguageServer, params: lsp.DefinitionParams) -> list[
     name = _identifier_at(doc.text, params.position)
     if not name:
         return []
-    idx = ls.index_for(uri)
+    idx = ls.index_for(uri, fresh=True)
     if idx is None:
         return []
-    # Of all candidates with this name, prefer the implementation over any
-    # declarators. Order of preference:
-    #   1. PROC / SCOPE / MACRO / STRUCT / UNION / ENUM   (the real thing)
-    #   2. LABEL / CHEAP_LOCAL / CONSTANT                 (defining label)
-    #   3. EXPORT / IMPORT                                (just a declarator)
-    candidates = idx.lookup(name)
-    implementation_kinds = {
-        SymbolKind.PROC,
-        SymbolKind.SCOPE,
-        SymbolKind.MACRO,
-        SymbolKind.STRUCT,
-        SymbolKind.UNION,
-        SymbolKind.ENUM,
-    }
-    label_kinds = {SymbolKind.LABEL, SymbolKind.CHEAP_LOCAL, SymbolKind.CONSTANT}
-    defs = (
-        [ws for ws in candidates if ws.kind in implementation_kinds]
-        or [ws for ws in candidates if ws.kind in label_kinds]
-        or candidates
-    )
+    defs = _definition_candidates(idx, uri, doc, params.position, name)
     return [lsp.Location(uri=ws.uri, range=_to_lsp_range(ws.range)) for ws in defs]
 
 
@@ -435,17 +791,28 @@ _SCOPE_CONTAINER_KINDS = frozenset(
 )
 
 
-def _enclosing_routine(doc, position: lsp.Position) -> BufferSymbol | None:
+def _enclosing_routine(
+    doc, position: lsp.Position, *, exclude_name: str | None = None
+) -> BufferSymbol | None:
     """Return the *smallest* routine-like symbol whose body range contains the
     LSP `position`, or None if the position is at file scope.
 
     "Routine-like" = ``.proc`` / ``.scope`` / a ``label:`` that gained a
     multi-line body during the post-process pass.
+
+    `exclude_name` is the identifier being queried.  With the cursor on the
+    definition `done:` of a proc-local label, the label's own body is the
+    smallest container, and "is `done` strictly inside its container" would
+    compare the label with itself and answer no -- which sent references and
+    rename for every proc-local label project-wide.  Skipping the queried
+    name yields the proc around it instead.
     """
     best = None
     best_span = None
     for s in doc.flat_symbols():
         if s.kind not in _SCOPE_CONTAINER_KINDS:
+            continue
+        if exclude_name is not None and s.name == exclude_name:
             continue
         # Skip single-line LABELs — they're data labels, not routines.
         if s.kind == SymbolKind.LABEL and s.range.end.line <= s.range.start.line:
@@ -559,47 +926,23 @@ def _build_hover_markdown(ws: WorkspaceSymbol, doc_text: str | None) -> str:
 def on_hover(ls: Ca65LanguageServer, params: lsp.HoverParams) -> lsp.Hover | None:
     """Return a hover panel for the identifier under the cursor.
 
-    Resolution preference matches `on_definition`: implementation kinds beat
-    declarators.  For cheap locals (`@name`), prefer the candidate whose
-    parent_label matches the cursor's enclosing routine — otherwise the
-    workspace might surface a same-named cheap local from another routine.
+    Resolution matches `on_definition` (`_definition_candidates`): the
+    enclosing routine's own labels first, then this file's definitions, then
+    exporters of an imported name, then implementation kinds over
+    declarators.
     """
     uri = params.text_document.uri
     doc = ls.doc_or_open(uri)
     name = _identifier_at(doc.text, params.position)
     if not name:
         return None
-    idx = ls.index_for(uri)
+    idx = ls.index_for(uri, fresh=True)
     if idx is None:
         return None
 
-    candidates = idx.lookup(name)
-    if not candidates:
+    picked = _definition_candidates(idx, uri, doc, params.position, name)
+    if not picked:
         return None
-
-    # If the cursor is inside a routine and the symbol is a cheap local, pick
-    # the candidate whose parent_label matches that routine.
-    enclosing = _enclosing_routine(doc, params.position)
-    if enclosing is not None and name.startswith("@"):
-        scoped = [c for c in candidates if c.parent_label == enclosing.name]
-        if scoped:
-            candidates = scoped
-
-    # Otherwise pick the canonical definition (matches on_definition's logic).
-    implementation_kinds = {
-        SymbolKind.PROC,
-        SymbolKind.SCOPE,
-        SymbolKind.MACRO,
-        SymbolKind.STRUCT,
-        SymbolKind.UNION,
-        SymbolKind.ENUM,
-    }
-    label_kinds = {SymbolKind.LABEL, SymbolKind.CHEAP_LOCAL, SymbolKind.CONSTANT}
-    picked = (
-        [c for c in candidates if c.kind in implementation_kinds]
-        or [c for c in candidates if c.kind in label_kinds]
-        or candidates
-    )
     ws = picked[0]
 
     # Load the defining file's text for the comment-above lookup. If the
@@ -626,7 +969,7 @@ def on_references(ls: Ca65LanguageServer, params: lsp.ReferenceParams) -> list[l
     name = _identifier_at(doc.text, params.position)
     if not name:
         return []
-    idx = ls.index_for(uri)
+    idx = ls.index_for(uri, fresh=True)
     if idx is None:
         return []
 
@@ -639,7 +982,7 @@ def on_references(ls: Ca65LanguageServer, params: lsp.ReferenceParams) -> list[l
     #     A top-level routine name (e.g. `hkdf_extract`) is the enclosing
     #     routine itself and stays global.
     body_filter: tuple[str, Range] | None = None
-    enclosing = _enclosing_routine(doc, params.position)
+    enclosing = _enclosing_routine(doc, params.position, exclude_name=name)
     if enclosing is not None:
         if name.startswith("@"):
             body_filter = (uri, _r_to_internal(enclosing.range))
@@ -678,7 +1021,7 @@ def _compute_rename_scope(
     idx = ls.index_for(uri)
     if idx is None:
         return None
-    enclosing = _enclosing_routine(doc, position)
+    enclosing = _enclosing_routine(doc, position, exclude_name=name)
     if enclosing is None:
         return None
     if name.startswith("@"):
@@ -695,28 +1038,20 @@ def on_prepare_rename(ls: Ca65LanguageServer, params: lsp.PrepareRenameParams):
     renamed, and which range the new name will replace."""
     uri = params.text_document.uri
     doc = ls.doc_or_open(uri)
-    name = _identifier_at(doc.text, params.position)
-    if not name or not _is_renameable(name):
+    span = _identifier_span_at(doc.text, params.position)
+    if span is None or not _is_renameable(span[2]):
         return None
-
-    # Compute the exact range of the identifier under the cursor — this is
-    # what the client will offer the user as the "old name" they're editing.
-    lines = doc.text.splitlines()
-    if params.position.line >= len(lines):
-        return None
-    line = lines[params.position.line]
-    import re as _re
-
-    for m in _re.finditer(r"@?[A-Za-z_][A-Za-z0-9_]*", line):
-        if m.start() <= params.position.character <= m.end():
-            return lsp.PrepareRenamePlaceholder(
-                range=lsp.Range(
-                    start=lsp.Position(line=params.position.line, character=m.start()),
-                    end=lsp.Position(line=params.position.line, character=m.end()),
-                ),
-                placeholder=m.group(0),
-            )
-    return None
+    # The exact range of the identifier the rename is about -- what the
+    # client offers the user as the "old name" they're editing.  Same
+    # resolution as on_rename, so a cursor on `jsr` renames the callee.
+    start, end, name = span
+    return lsp.PrepareRenamePlaceholder(
+        range=lsp.Range(
+            start=lsp.Position(line=params.position.line, character=start),
+            end=lsp.Position(line=params.position.line, character=end),
+        ),
+        placeholder=name,
+    )
 
 
 @server.feature(lsp.TEXT_DOCUMENT_RENAME)
@@ -748,7 +1083,7 @@ def on_rename(ls: Ca65LanguageServer, params: lsp.RenameParams) -> lsp.Workspace
         # Adding a @ to a non-cheap-local rename would change its kind; refuse.
         return None
 
-    idx = ls.index_for(uri)
+    idx = ls.index_for(uri, fresh=True)
     if idx is None:
         return None
 
@@ -847,8 +1182,28 @@ def _compute_diagnostics(uri: str) -> list[lsp.Diagnostic]:
 # -------------------------------------------------------------------- entry point
 
 
+#: Loggers that echo every JSON-RPC payload ("Sending data: ...", "Received
+#: ...") at INFO.  Serena re-logs any stderr line containing "error" as an
+#: ERROR, so a payload mentioning `ip65_error` became a spurious error line
+#: on every request (Serena review F10).
+PROTOCOL_LOGGERS = ("pygls", "lsprotocol")
+VERBOSE_ENV = "CA65_LS_VERBOSE"
+
+
+def configure_logging(level: str = "INFO", *, verbose: bool = False) -> None:
+    """Set up stderr logging.  `level` applies to ca65-ls's own logger; the
+    pygls / lsprotocol protocol chatter is held at WARNING unless `verbose`
+    (the ``--verbose`` flag or ``CA65_LS_VERBOSE=1``) is set, in which case
+    everything goes to DEBUG."""
+    root_level = logging.DEBUG if verbose else getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(level=root_level, force=True)
+    for name in PROTOCOL_LOGGERS:
+        logging.getLogger(name).setLevel(logging.DEBUG if verbose else logging.WARNING)
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
+    import os
 
     p = argparse.ArgumentParser(
         prog="ca65-ls",
@@ -858,9 +1213,15 @@ def main(argv: list[str] | None = None) -> int:
         "--stdio", action="store_true", default=True, help="LSP over stdin/stdout (default)"
     )
     p.add_argument("--log-level", default="INFO", help="DEBUG / INFO / WARNING / ERROR")
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        default=bool(os.environ.get(VERBOSE_ENV)),
+        help=f"also log every JSON-RPC payload (or set {VERBOSE_ENV}=1)",
+    )
     args = p.parse_args(argv)
 
-    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+    configure_logging(args.log_level, verbose=args.verbose)
     server.start_io()
     return 0
 

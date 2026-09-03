@@ -54,10 +54,11 @@ def _proc_local_labels(project: Project) -> list[tuple[WorkspaceSymbol, tuple[in
     return out
 
 
-@red
 def test_rename_of_proc_local_label_never_leaves_its_proc(corpus: list[Project]):
-    """F3 (destructive): c64-mlkem sponge.s `done:` rename edits four other
-    routines in four files. 36 of 107 proc-nested labels overflow."""
+    """F3 (destructive, fixed 2026-09-02): c64-mlkem sponge.s `done:` rename
+    edited four other routines in four files; 36 of 107 proc-nested labels
+    overflowed `.endproc` (parser) and, with the cursor on the definition,
+    the label was its own enclosing routine (server)."""
     leaks = []
     for project in corpus:
         seen: set[str] = set()
@@ -81,7 +82,6 @@ def test_rename_of_proc_local_label_never_leaves_its_proc(corpus: list[Project])
     assert not leaks, f"{len(leaks)} renames leaked outside their proc; first: {leaks[:8]}"
 
 
-@red
 def test_rename_of_exported_proc_edits_the_declarator(corpus: list[Project]):
     """F4: the declarator was dropped from references by the export
     suppression fix, so rename leaves `.export old` behind (3885 sites)."""
@@ -113,8 +113,16 @@ def test_rename_of_exported_proc_edits_the_declarator(corpus: list[Project]):
 
 @red
 def test_labels_without_colons_files_are_indexed(corpus: list[Project]):
-    """F6: `.feature labels_without_colons` turns the whole file into one
-    ERROR node; c64-https loses 656 labels in its three vt100 drivers."""
+    """RED, narrowed 2026-09-02. The colonless-label fallback itself works:
+    the three ip65 vt100 drivers went from 40 symbols to 173-213. What is
+    left is a resynchronisation problem. Those files use `.asc`, which is
+    **not a CA65 control command** -- `ca65` itself answers "'.ASC' is not a
+    recognized control command" -- so the grammar yields an ERROR node that
+    swallows everything from that line to end of file. In c64vt100.s the
+    first `.asc` is at line 1268 and the 54 column-0 labels below it are all
+    lost. Fixing this means recovering from an unparsable line instead of
+    abandoning the rest of the file; it is not about the colonless feature.
+    """
     thin = []
     for project in corpus:
         for path in project.files:
@@ -144,11 +152,11 @@ def test_labels_without_colons_files_are_indexed(corpus: list[Project]):
     assert not thin, f"{len(thin)} labels_without_colons files mostly unindexed; first: {thin[:6]}"
 
 
-@red
 def test_definition_prefers_the_label_in_the_calling_file(corpus: list[Project]):
-    """F10: when a name is a LABEL in the caller's own file and a PROC in an
-    unrelated file, on_definition returns the foreign PROC (c64-wireguard
-    print_string: 21 such names)."""
+    """F10 (fixed 2026-09-02, server): when a name is a LABEL in the caller's
+    own file and a PROC in an unrelated file, on_definition returned the
+    foreign PROC (c64-wireguard print_string: 21 such names). The calling
+    file's own definition now ranks first."""
     wrong = []
     for project in corpus:
         by_name: dict[str, list[WorkspaceSymbol]] = {}

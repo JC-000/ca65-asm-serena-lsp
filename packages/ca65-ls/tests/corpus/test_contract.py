@@ -151,13 +151,7 @@ def _nesting_violations(project: Project) -> list:
     return bad
 
 
-@red
 def test_document_symbol_children_nest_inside_parents(corpus: list[Project]):
-    """RED (found 2026-09-02 by this suite): a label that is the last one
-    before `.endproc` gets a body that runs to end-of-file instead of stopping
-    at the enclosing proc's end (c64-x25519 fe25519.s: mul38_hi 1160-2481
-    inside mul_by_38 1115-1161). Label bodies must be clipped to their parent.
-    """
     bad = [v for project in corpus for v in _nesting_violations(project)]
     assert not bad, f"{len(bad)} children outside their parent's range; first: {bad[:10]}"
 
@@ -165,12 +159,11 @@ def test_document_symbol_children_nest_inside_parents(corpus: list[Project]):
 # ------------------------------------------------------------------ duplicates
 
 
-@red
 def test_no_symbol_is_emitted_twice(corpus: list[Project]):
-    """RED (found 2026-09-02 by this suite): every cheap local, and labels
-    nested in procs, reach the workspace index twice as byte-identical records
-    (c64-x25519: 197 of 885 records). The document-symbol tree shows them once,
-    so the duplication happens during ingestion, not parsing.
+    """Fixed 2026-09-02 (index): every cheap local, and labels nested in
+    procs, reached the workspace index twice as byte-identical records
+    (c64-x25519: 197 of 885 records) because `_ingest_file` re-flattened an
+    already flat list. Records are now deduplicated by identity on ingest.
     """
     seen = Counter(
         (
@@ -206,11 +199,11 @@ def test_export_declarator_suppressed_when_defined_in_same_file(project: Project
     )
 
 
-@red
 def test_duplicate_rate_stays_low(corpus: list[Project]):
-    """RED: same root cause as test_no_symbol_is_emitted_twice (22.3% on
+    """Fixed 2026-09-02 with test_no_symbol_is_emitted_twice (22.3% on
     c64-x25519). Kept separate because it also catches a *new* phantom source
-    that emits under a different kind once the identical-record bug is fixed.
+    that emits under a different kind now that the identical-record bug is
+    fixed.
 
     Same (file, name, line) reported under two kinds. Some is legitimate
     (a label that is also .export'ed elsewhere in the file); a jump means a
@@ -229,21 +222,15 @@ def test_duplicate_rate_stays_low(corpus: list[Project]):
 _TOOL_DIRS = (".claude/", ".git/", ".ca65-ls/", ".serena/", ".venv/", "node_modules/")
 
 
-def _contaminated(project: Project) -> bool:
-    return any(
-        f"/{d}" in f"/{project.path(s.uri).relative_to(project.root).as_posix()}"
-        for s in _all(project)
-        for d in _TOOL_DIRS
-    )
-
-
-@red
 def test_tool_directories_are_not_indexed(corpus: list[Project]):
-    """RED (found 2026-09-02 by this suite): `.claude/worktrees/agent-*/` holds
-    complete copies of the repo left behind by worktree-isolated agents. They
-    are gitignored (`.claude/*`), but the indexer still walks them, so on
-    c64-https 1748 of 1995 indexed files are copies and every routine has
-    7-34 definitions. Five of the nine corpus projects are affected.
+    """Fixed 2026-09-02 (index): `.claude/worktrees/agent-*/` holds complete
+    copies of the repo left behind by worktree-isolated agents. They were
+    gitignored (`.claude/*`) but the walk asked pathspec about file paths
+    only, so on c64-https 1748 of 1995 indexed files were copies and every
+    routine had 7-34 definitions. Inside a checkout the indexer now asks
+    `git ls-files` (nested checkouts and global excludes included); the
+    fallback walk prunes ignored ancestors and `.claude/` / `.serena/` are
+    built-in exclusions.
     """
     offenders = sorted(
         {
@@ -264,14 +251,7 @@ def _contaminated_uri(project: Project, uri: str) -> bool:
     return any(f"/{d}" in rel for d in _TOOL_DIRS)
 
 
-@red
 def test_acme_dialect_files_contribute_no_symbols(corpus: list[Project]):
-    """RED (found 2026-09-02 by this suite): c64-nist-curves keeps ACME
-    (`!zone`) and CA65 twins side by side (mod256.asm / mod256.s). The CA65
-    grammar parses the ACME file into partial garbage, so `jsr fp_mod_mul` in
-    the .asm twin shows up in some queries and not others. Files that carry
-    ACME directives should be sniffed and skipped by the indexer.
-    """
     offenders = [
         (
             project.root.name,
@@ -300,10 +280,6 @@ def test_gitignored_files_are_not_indexed(project: Project):
         text=True,
     )
     ignored = [line for line in out.stdout.splitlines() if line]
-    if _contaminated(project):
-        pytest.xfail(
-            f"{len(ignored)} gitignored files indexed; see test_tool_directories_are_not_indexed"
-        )
     assert not ignored, f"{len(ignored)} gitignored files indexed; first: {ignored[:10]}"
 
 
@@ -330,30 +306,36 @@ def test_every_block_declaration_is_indexed(project: Project):
     assert not missing, f"{len(missing)} declarations not indexed; first: {missing[:15]}"
 
 
+def _top_dir(project: Project, uri: str) -> str:
+    return project.path(uri).relative_to(project.root).parts[0]
+
+
 def _cross_file_calls(project: Project) -> list[tuple[gt.CallSite, str, WorkspaceSymbol]]:
     """Deterministic sample of `jsr NAME` sites whose target has exactly one
-    definition in another file."""
-    if _contaminated(project):
-        pytest.xfail(
-            "index contains tool-directory copies; see test_tool_directories_are_not_indexed"
-        )
+    definition in another file.
+
+    A project may legitimately carry a second copy of its own sources
+    (c64-ChaCha20-Poly1305 vendors a release of itself under
+    `examples/smoke_test/third_party/`), in which case every name has two
+    file-level definitions.  Such a name still counts when exactly one of
+    them lives under the caller's own top-level directory."""
     picks = []
     for path in project.files:
         if gt.is_acme(path):
             continue
+        uri = project.uri(path)
         for call in gt.call_sites(path):
-            # Collapse byte-identical records so the double-emission bug
-            # (test_no_symbol_is_emitted_twice) does not hide other defects.
-            defs = list(
-                {
-                    s
-                    for s in project.index.lookup(call.name)
-                    if s.kind in _DEFINITION_KINDS and not s.scope_path
-                }
-            )
-            if len(defs) != 1 or defs[0].uri == project.uri(path):
+            defs = [
+                s
+                for s in project.index.lookup(call.name)
+                if s.kind in _DEFINITION_KINDS and not s.scope_path
+            ]
+            if len(defs) > 1:
+                near = [s for s in defs if _top_dir(project, s.uri) == _top_dir(project, uri)]
+                defs = near if len(near) == 1 else defs
+            if len(defs) != 1 or defs[0].uri == uri:
                 continue
-            picks.append((call, project.uri(path), defs[0]))
+            picks.append((call, uri, defs[0]))
     # Spread the sample over the whole project rather than the first files.
     step = max(1, len(picks) // _SAMPLE)
     return picks[::step][:_SAMPLE]
@@ -436,3 +418,61 @@ def test_workspace_symbol_search_finds_every_proc(project: Project):
         if not any(hit.name == s.name for hit in project.index.search(s.name, limit=50))
     ]
     assert not missing, f"{len(missing)} procs not found by search; first: {missing[:10]}"
+
+
+# ------------------------------------------------------------------ independent file-walk oracle
+
+
+def _git_tracked_assembly(project: Project) -> set[str] | None:
+    """Tracked assembly files including submodules, from git itself, so this
+    oracle does not share code with the indexer's own enumeration."""
+    import subprocess
+
+    if not (project.root / ".git").exists():
+        return None
+    out = subprocess.run(
+        ["git", "-C", str(project.root), "ls-files", "-z", "--recurse-submodules"],
+        capture_output=True,
+        text=True,
+    )
+    if out.returncode != 0:
+        return None
+    return {p for p in out.stdout.split("\0") if p and p.lower().endswith((".s", ".asm", ".inc"))}
+
+
+def test_every_tracked_assembly_file_is_indexed(corpus: list[Project]):
+    """The git-based
+    enumeration used to list a submodule as one gitlink entry and never
+    descend, so c64-https dropped from 247 files to 67 (ip65/,
+    libs/nistcurves, libs/x25519 gone). The rest of this suite could not see
+    it, because it derives expectations from the same walk; this oracle asks
+    git directly. Found by the second adversarial pass, 2026-09-02.
+    """
+    missing = []
+    for project in corpus:
+        tracked = _git_tracked_assembly(project)
+        if tracked is None:
+            continue
+        indexed = {p.relative_to(project.root).as_posix() for p in project.files}
+        lost = sorted(tracked - indexed)
+        if lost:
+            missing.append((project.root.name, len(lost), len(tracked), lost[:5]))
+    assert not missing, f"tracked assembly files not indexed: {missing}"
+
+
+def test_labels_without_colons_oracle_is_not_vacuous(corpus: list[Project]):
+    """c64-https' ip65 submodule holds three vt100 drivers declaring the
+    feature; if c64-https is present and none is found, the file walk is
+    broken, not the parser."""
+    names = {p.root.name for p in corpus}
+    if "c64-https" not in names:
+        pytest.skip("c64-https not present")
+    https = next(p for p in corpus if p.root.name == "c64-https")
+    found = [
+        path
+        for path in https.files
+        if any("labels_without_colons" in ln for ln in https.lines(path)[:60])
+    ]
+    assert found, (
+        "no labels_without_colons files found in c64-https; the ip65 submodule is missing from the walk"
+    )

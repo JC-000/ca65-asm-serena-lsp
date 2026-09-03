@@ -66,7 +66,121 @@ Invariants checked per project:
 - workspace search finds every proc
 - nothing under a tool directory or the project's own `.gitignore` is indexed
 
-## Defects found by the suite (2026-09-02)
+## Status after the fix phase (2026-09-02)
+
+Four implementers worked the findings below in parallel on disjoint files,
+each flipping its own red tests and adding green regression guards, followed
+by a second adversarial pass over the diff. State of the gate afterwards:
+
+| layer | green | red |
+|---|---|---|
+| hook | 225 | 0 |
+| unit | 179 | 0 |
+| corpus | 139 | 1 |
+| through-Serena | 15 | 0 |
+| fork e2e | 5 | 0 |
+
+What changed, by layer:
+
+- **Index** (`workspace.py`): inside a git checkout the file list comes from
+  `git ls-files -co --exclude-standard`, so nested checkouts (worktrees),
+  global excludes and `.git/info/exclude` are honoured; the walk fallback
+  prunes ignored ancestors and ignores `.claude/` and `.serena/` by default.
+  Nested symbols are stored once. Files are re-indexed from buffer text on
+  `didOpen`/`didChange`, from disk on `didClose`, a throttled rescan runs on
+  every query, `workspace/didChangeWatchedFiles` is handled, and the `.dbg`
+  reloads when it changes. `CACHE_FORMAT_VERSION` is 6.
+- **Server**: definition ranks the enclosing routine, then the calling
+  file, then exporters of an imported name, then kind; hover matches. A
+  cursor on a mnemonic or directive resolves to its operand. The queried
+  label is no longer its own enclosing routine, which was the last piece of
+  the project-wide rename. Protocol logging is quiet unless `--verbose`.
+- **Parser** (`document.py`): label bodies clip to the enclosing container;
+  columns are code points via a per-line byte map; the `.export` declarator
+  of an in-file definition is a reference again; macro arguments are lexed
+  for references; `.define`/`.set` are symbols; ACME files are sniffed and
+  emit nothing. Three fixes work by rewriting the parse input in a
+  byte-length-preserving way before tree-sitter sees it: leading `::` is
+  blanked, `a:`/`z:`/`f:` prefixes in operand position are blanked, and in
+  `labels_without_colons` files a colon is inserted after column-0 labels.
+- **Shim** (fork, one file): no 2 s wait before the first cross-file
+  request; `.claude` ignored by Serena's own walk; project root resolved
+  before SolidLSP sees it; a missing or crashing `ca65-ls` fails fast with an
+  install hint and a separate `initialize` timeout; pygls chatter on stderr
+  is classified DEBUG.
+- **Hook**: rewritten around a linear tokenizer that respects quotes,
+  heredocs, newlines and every shell operator, tracks `cd` and `for`
+  bindings, and counts a read only when it has an assembly operand inside
+  the project that owns the cwd (walking up from a subdirectory), or is a
+  recursive grep rooted in a project directory holding assembly. 100 kB
+  commands classify in about 25 ms. State is validated and pruned; payloads
+  without a session id are ignored.
+
+Decisions taken (each pinned by a green test):
+
+- Quiet window: counting continues during the 120 s after a deny, nothing is
+  denied inside it, and a burst that continues is denied as soon as it closes.
+- Not counted by the hook: `python -c`, `bash -c`, `eval`, `od`, `strings`,
+  `cut`, `wc`, and any read whose path is an unresolvable `$VAR` (including
+  `while read f; do cat $f`). Still counted: `grep -q/-c/-l`, redirected
+  transforms.
+- The project comes from the payload cwd only; `cd <other project> &&` from
+  a neutral cwd is not counted, matching Serena's active-project model.
+- Subagents sharing the parent's session id, and coordination with Serena's
+  own remind hook, are left as they are.
+- `find_symbol` keeps returning `.import` declarators (Interface kind).
+
+### Second adversarial pass (2026-09-02, over the fix diff)
+
+Reviewing the fixes found three defects the first suite could not see,
+because it derived its expectations from the same code it was checking.
+
+1. **The git-based walk dropped every submodule.** `git ls-files -co` reports
+   a submodule as one gitlink entry and never descends, and
+   `--recurse-submodules` is incompatible with `-o`. c64-https fell from 247
+   files to 67, losing `ip65/` and `libs/`; c64-wireguard 83 to 43;
+   c64-aes256-ecdsa 70 to 37. The enumeration now lists gitlinks with
+   `git ls-files -s` (mode 160000) and recurses into each initialised one,
+   with a cycle guard. Nested checkouts under `.claude/` are not gitlinks, so
+   the worktree copies stay excluded. The suite now also carries an
+   *independent* oracle that asks `git ls-files --recurse-submodules`
+   directly, so a walk regression can never again pass unnoticed.
+2. **The ACME sniff had false positives that silently emptied a file.** A CA65
+   file whose only `!` line sat in a comment, or which merely used no dotted
+   directive, was classified ACME and emitted nothing. Comments are stripped
+   before sniffing now. One real `!directive` still suffices: c64-nist-curves'
+   `fp384.asm` is ACME on the strength of a single `!fill`.
+3. **Definition resolution picked distant copies.** Restoring the submodules
+   revealed that c64-wireguard defines `fe25519_one` both in `src/crypto/` and
+   in the vendored `libs/x25519` submodule, and both export it. The ranking
+   now puts proximity (shared directory prefix with the caller) above kind, so
+   a sibling label beats a vendored `.proc`, and it never returns an `.import`
+   declarator when a real definition is known.
+
+The one remaining red test is the ip65 vt100 drivers. The colonless-label
+fallback works (40 symbols to 173-213 per file); what is left is that those
+files use `.asc`, which is **not a CA65 control command** -- `ca65` itself
+rejects it -- so the grammar produces an ERROR node that swallows everything
+from that line to end of file, losing the 54 column-0 labels below it in
+c64vt100.s. Fixing it means resynchronising after an unparsable line, which
+is a parser-robustness change rather than anything to do with the feature.
+
+Deliberately not done: the index does not follow directory symlinks. The
+only one in the corpus is c64-wireguard's `ip65 -> ../c64-https/ip65`, a
+link *out of* the project; following it indexed 158 foreign files under URIs
+outside the wireguard root, which the server (which resolves paths) then
+could not attribute to any workspace. A link *into* the project adds nothing
+the walk does not already reach. Prerequisite for ever changing this: the
+server must stop resolving paths and treat the link path as the identity.
+
+Still open: `labels_without_colons` files can mislabel a column-0 call of a
+macro defined in an include.
+
+## Defects found by the suite (2026-09-02, before the fix phase)
+
+Kept as the record of what the suite was built against. Everything in this
+section is fixed unless listed under "Still open" above.
+
 
 All are recorded as red tests; none is fixed yet.
 

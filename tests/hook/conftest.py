@@ -7,6 +7,7 @@ project directory. Nothing here touches the live state under ``~/.claude``.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -15,6 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -150,24 +152,50 @@ def home(tmp_path: Path) -> Path:
     return h
 
 
-@pytest.fixture
-def ca65_project(tmp_path: Path) -> Path:
-    return make_project(tmp_path, "c64-thing", CA65_YML)
+# Projects live under the fake HOME so that ``~/c64-thing/...`` in a command
+# resolves to the same directory the hook sees as the project root.
 
 
 @pytest.fixture
-def other_ca65_project(tmp_path: Path) -> Path:
-    return make_project(tmp_path, "c64-other", CA65_YML)
+def ca65_project(home: Path) -> Path:
+    return make_project(home, "c64-thing", CA65_YML)
 
 
 @pytest.fixture
-def python_project(tmp_path: Path) -> Path:
-    return make_project(tmp_path, "py-thing", PYTHON_ONLY_YML)
+def other_ca65_project(home: Path) -> Path:
+    return make_project(home, "c64-other", CA65_YML)
 
 
 @pytest.fixture
-def bare_project(tmp_path: Path) -> Path:
-    return make_project(tmp_path, "bare", None)
+def python_project(home: Path) -> Path:
+    return make_project(home, "py-thing", PYTHON_ONLY_YML)
+
+
+@pytest.fixture
+def bare_project(home: Path) -> Path:
+    return make_project(home, "bare", None)
+
+
+@pytest.fixture(scope="session")
+def nudge() -> ModuleType:
+    """The hook imported as a module, for unit tests of the classifier."""
+    spec = importlib.util.spec_from_file_location("ca65_bash_nudge", HOOK)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def classify(nudge: ModuleType, ca65_project: Path, home: Path):
+    """Classify a command as the hook would from ``cwd`` (default: project root)."""
+
+    def run(command: str, cwd: Path | None = None) -> str | None:
+        root = str(ca65_project.resolve())
+        ctx = nudge._Context(root, str((cwd or ca65_project).resolve()), str(home))
+        return nudge._command_kind(command, ctx)
+
+    return run
 
 
 @pytest.fixture

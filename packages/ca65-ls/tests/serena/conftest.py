@@ -35,11 +35,19 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.serena)
 
 
-@contextmanager
-def started(
-    project_root: Path, data_dir: Path, *, ignored: list[str] | None = None, timeout: float = 120.0
-) -> Iterator[SolidLanguageServer]:
-    """Mirror of the fork's test/conftest.py::_create_ls for LanguageServerId.CA65."""
+def create(
+    project_root: Path,
+    data_dir: Path,
+    *,
+    ignored: list[str] | None = None,
+    timeout: float = 120.0,
+    settings: dict | None = None,
+) -> SolidLanguageServer:
+    """Mirror of the fork's test/conftest.py::_create_ls for LanguageServerId.CA65 (not started).
+
+    `settings` are the CA65 entry of `ls_specific_settings`, i.e. what a user puts under
+    `ls_specific_settings: ca65:` in Serena's config (`ls_base_cmd`, `ls_args`, `initialize_timeout`...).
+    """
     config = LanguageServerConfig(
         ls_id=LanguageServerId.CA65,
         ignored_paths=list(ignored or []),
@@ -49,16 +57,29 @@ def started(
     )
     (data_dir / "project").mkdir(parents=True, exist_ok=True)
     (data_dir / "home").mkdir(parents=True, exist_ok=True)
-    ls = SolidLanguageServer.create(
+    return SolidLanguageServer.create(
         config,
         str(project_root),
         timeout=timeout,
         solidlsp_settings=SolidLSPSettings(
             solidlsp_dir=str(data_dir / "home"),
             project_data_path=str(data_dir / "project"),
-            ls_specific_settings={},
+            ls_specific_settings={LanguageServerId.CA65: dict(settings or {})},
         ),
     )
+
+
+@contextmanager
+def started(
+    project_root: Path,
+    data_dir: Path,
+    *,
+    ignored: list[str] | None = None,
+    timeout: float = 120.0,
+    settings: dict | None = None,
+) -> Iterator[SolidLanguageServer]:
+    """`create`, started; stops the server on exit."""
+    ls = create(project_root, data_dir, ignored=ignored, timeout=timeout, settings=settings)
     with ls.start_server_context():
         yield ls
 
