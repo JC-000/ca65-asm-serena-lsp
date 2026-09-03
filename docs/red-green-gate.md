@@ -66,6 +66,17 @@ Invariants checked per project:
 - workspace search finds every proc
 - nothing under a tool directory or the project's own `.gitignore` is indexed
 
+## Running it
+
+```sh
+scripts/gate.sh          # every layer
+scripts/gate.sh --quick  # hook + unit + fork e2e only
+```
+
+The fork layers need `~/Documents/serena/.venv`; they are skipped with a
+notice when it is absent. The corpus layer skips any project that is not
+checked out, so a machine without the `c64-*` repos still gets a clean run.
+
 ## Status after the fix phase (2026-09-02)
 
 Four implementers worked the findings below in parallel on disjoint files,
@@ -79,6 +90,9 @@ by a second adversarial pass over the diff. State of the gate afterwards:
 | corpus | 139 | 1 |
 | through-Serena | 15 | 0 |
 | fork e2e | 5 | 0 |
+
+Re-verified 2026-09-03 against upstream Serena `801a388c` after rebasing the
+fork onto it (fork lint and `ty` clean, e2e 5/5).
 
 What changed, by layer:
 
