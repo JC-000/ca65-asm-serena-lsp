@@ -54,7 +54,14 @@ def create(
     timeout: float = 120.0,
     settings: dict | None = None,
 ) -> SolidLanguageServer:
-    """Mirror of the fork's test/conftest.py::_create_ls for the "ca65" language server (not started).
+    """Build the "ca65" language server the way Serena does (not started).
+
+    Modelled on the fork's `test/conftest.py::_create_ls`, but not a faithful mirror of it:
+    that helper also seeded `ignored_paths` from `GitignoreParser(repo_path).get_ignore_specs()`.
+    Nothing here does, which is harmless for the current fixtures (`tests/fixtures/test_repo`
+    has no `.gitignore`, and `Ca65LanguageServer.is_ignored_dirname` hardcodes build/obj/
+    .ca65-ls/.claude anyway) but would matter for a fixture that relied on gitignore-driven
+    exclusion.
 
     `settings` are the CA65 entry of `ls_specific_settings`, i.e. what a user puts under
     `ls_specific_settings: ca65:` in Serena's config (`ls_base_cmd`, `ls_args`, `initialize_timeout`...).

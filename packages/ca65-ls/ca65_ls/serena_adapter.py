@@ -4,6 +4,15 @@ CA65 language server adapter for Serena.
 This module ships as part of the `ca65-ls` package and self-registers with
 Serena's language server registry via the `solidlsp.language_server_registration`
 entry point. Spawns the `ca65-ls` server over stdio.
+
+`solidlsp` and `overrides` are deliberately NOT declared as dependencies of ca65-ls.
+This module is host-provided-plugin code: the only thing that imports it is a Serena
+process, which supplies both. Depending on `serena-agent` from here would invert the
+relationship -- installing the language server would drag in the agent that hosts it --
+and would pin us to a Serena version. The cost of that choice is that a bare
+`pip install ca65-ls` followed by `import ca65_ls.serena_adapter` raises
+ModuleNotFoundError; every other entry point into ca65-ls (`ca65_ls.server`, the CLI
+scripts) is free of these imports and works standalone.
 """
 
 import hashlib
