@@ -18,8 +18,19 @@ import pytest
 solidlsp = pytest.importorskip("solidlsp", reason="through-Serena tests need the fork venv")
 
 from solidlsp import SolidLanguageServer  # noqa: E402
-from solidlsp.ls_config import LanguageServerConfig, LanguageServerId  # noqa: E402
+from solidlsp.ls_config import LanguageServerConfig, LanguageServerRegistry  # noqa: E402
 from solidlsp.settings import SolidLSPSettings  # noqa: E402
+
+from ca65_ls.serena_adapter import register_ca65  # noqa: E402
+
+# CA65 is no longer a member of SolidLSP's `LanguageServerId` enum: since upstream grew
+# external-adapter support, ca65-ls registers itself under the key "ca65" through the
+# `solidlsp.language_server_registration` entry point. `get_instance()` runs that entry-point
+# discovery, so an installed ca65-ls is already registered by the time we resolve; the explicit
+# (idempotent) `register_ca65()` covers the case where the package is on `sys.path` but its
+# entry-point metadata is stale, which is the normal state during editable development.
+register_ca65()
+CA65_ID = LanguageServerRegistry.get_instance().resolve("ca65")
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "test_repo"
 
@@ -43,13 +54,13 @@ def create(
     timeout: float = 120.0,
     settings: dict | None = None,
 ) -> SolidLanguageServer:
-    """Mirror of the fork's test/conftest.py::_create_ls for LanguageServerId.CA65 (not started).
+    """Mirror of the fork's test/conftest.py::_create_ls for the "ca65" language server (not started).
 
     `settings` are the CA65 entry of `ls_specific_settings`, i.e. what a user puts under
     `ls_specific_settings: ca65:` in Serena's config (`ls_base_cmd`, `ls_args`, `initialize_timeout`...).
     """
     config = LanguageServerConfig(
-        ls_id=LanguageServerId.CA65,
+        ls_id=CA65_ID,
         ignored_paths=list(ignored or []),
         trace_lsp_communication=False,
         workspace_folders=["."],
@@ -64,7 +75,10 @@ def create(
         solidlsp_settings=SolidLSPSettings(
             solidlsp_dir=str(data_dir / "home"),
             project_data_path=str(data_dir / "project"),
-            ls_specific_settings={LanguageServerId.CA65: dict(settings or {})},
+            # Keyed by the string key rather than the id object: `get_ls_specific_settings`
+            # resolves `ls_id.get_key()` first, and that path works for external ids, whereas
+            # the object-keyed lookup is only consulted for `LanguageServerId` enum members.
+            ls_specific_settings={"ca65": dict(settings or {})},
         ),
     )
 

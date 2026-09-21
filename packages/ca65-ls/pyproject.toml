@@ -56,6 +56,14 @@ dev = [
 ca65-ls = "ca65_ls.server:main"
 ca65-dbg-dump = "ca65_ls.index.dbg_oracle:main"
 
+# Serena/SolidLSP discovers external language-server adapters through this entry-point group
+# (`LanguageServerRegistry._discover_language_server_registrations_from_entry_points`). With
+# ca65-ls installed into the same environment as Serena, the "ca65" key becomes usable in a
+# project's `language_servers:` list with no changes to Serena itself. This is what replaced
+# the in-tree `LanguageServerId.CA65` enum member the fork used to carry.
+[project.entry-points."solidlsp.language_server_registration"]
+ca65 = "ca65_ls.serena_adapter:register_ca65"
+
 [tool.setuptools.packages.find]
 include = ["ca65_ls*"]
 

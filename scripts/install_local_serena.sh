@@ -17,7 +17,7 @@
 #
 # What it actually writes:
 #   project mode -> <project>/.mcp.json with one MCP entry: `serena`, pointing
-#                   at JC-000/serena@feature/ca65-language-server, with --with
+#                   at JC-000/serena@feature/ca65-external-adapter, with --with
 #                   for the local ca65-ls source.
 #   global mode  -> rewrites ~/.claude.json's `.mcpServers.serena`. Backs up
 #                   the original to ~/.claude.json.pre-ca65-<timestamp>.
@@ -33,7 +33,14 @@
 set -euo pipefail
 
 CA65_LS_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/packages/ca65-ls"
-FORK_URL="git+https://github.com/JC-000/serena@feature/ca65-language-server"
+# The fork branch now carries only two small quality-of-life commits (assembly
+# extensions in the reminder hook, and the LSP `detail` field in to_dict). The CA65
+# language server itself is NOT in the fork any more: ca65-ls registers itself with
+# upstream Serena through a `solidlsp.language_server_registration` entry point, so
+# the `--with` below is what actually provides CA65 support. Swapping this URL for
+# plain `serena-agent` would still give working CA65 tools, just without those two
+# refinements.
+FORK_URL="git+https://github.com/JC-000/serena@feature/ca65-external-adapter"
 DEFAULT_PROJECT="${HOME}/Documents/c64-https"
 
 MODE="project"
