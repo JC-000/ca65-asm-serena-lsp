@@ -8,11 +8,13 @@ Gives Serena's symbolic tools (`find_symbol`, `find_referencing_symbols`, `get_s
 
 **v1 complete and in daily use.** Validated end-to-end against a real C64 project of 247 sources / 8.6k symbols (cold reindex 1.3s, `.dbg` enrichment active), and regression-tested against ten real CA65 codebases by the [red/green gate](docs/red-green-gate.md).
 
-Upstreaming into `oraios/serena` was declined ([oraios/serena#1504](https://github.com/oraios/serena/pull/1504), closed 2026-05-26 as too niche / third-party-dependency risk), so the integration lives permanently in the fork [`JC-000/serena@feature/ca65-language-server`](https://github.com/JC-000/serena/tree/feature/ca65-language-server), kept rebased onto upstream main.
+Upstreaming into `oraios/serena` was declined ([oraios/serena#1504](https://github.com/oraios/serena/pull/1504), closed 2026-05-26 as too niche / third-party-dependency risk). That no longer requires a fork to carry the integration: upstream has since added support for out-of-tree language servers, so **`ca65-ls` now registers itself with a stock Serena** through a `solidlsp.language_server_registration` entry point, and the key `ca65` works in any project's `language_servers:` list with no patched Serena at all.
+
+The fork [`JC-000/serena@feature/ca65-external-adapter`](https://github.com/JC-000/serena/tree/feature/ca65-external-adapter) survives only for two small refinements — assembly file extensions in the symbolic-tools reminder hook, and the LSP `detail` field surfaced in symbol output — and is optional.
 
 ## Correctness
 
-Every change to the language server, the Serena shim, or the Bash nudge hook goes through `scripts/gate.sh`, which runs five layers: the hook suite, ca65-ls unit tests, a contract suite against ten real `c64-*` projects, a through-Serena layer driven via SolidLSP, and the fork's end-to-end tests.
+Every change to the language server, the Serena adapter, or the Bash nudge hook goes through `scripts/gate.sh`, which runs five layers: the hook suite, ca65-ls unit tests, a contract suite against ten real `c64-*` projects, a through-Serena layer driven via SolidLSP (including the end-to-end tests), and a check that Serena still discovers the adapter through its entry point.
 
 The corpus expectations are derived from the source text rather than hand-written, so they cannot rot as those projects evolve, and the suite carries oracles that do not share code with what they check. Known defects are recorded as strict `xfail` tests: a fix makes one pass unexpectedly and fails the gate until the marker is removed, so the suite always states what is still owed. See [`docs/red-green-gate.md`](docs/red-green-gate.md) for the convention and the full findings history.
 
@@ -21,10 +23,10 @@ The corpus expectations are derived from the source text rather than hand-writte
 ```
    +-----------------+      LSP/JSON-RPC      +---------------------------+
    |   Serena MCP    |  <------ stdio ------> |   ca65-ls (Python+pygls)  |
-   |  (SolidLS shim) |                        |   server.py               |
+   |  (SolidLSP)     |                        |   server.py               |
    +-----------------+                        |   |                       |
-      (fork branch)                           |   v                       |
-                                              |  +--------+ +-----------+ |
+   stock upstream, finds                      |   v                       |
+   adapter via entry point                    |  +--------+ +-----------+ |
                                               |  | Buffer | | Project   | |
                                               |  | layer  | | index     | |
                                               |  | (TS)   | | (lazy)    | |
@@ -60,7 +62,7 @@ scripts/install_local_serena.sh --global   # or everywhere
 After the fork branch is updated (e.g. a rebase onto upstream), refresh the cached build:
 
 ```sh
-uvx --refresh --from "git+https://github.com/JC-000/serena@feature/ca65-language-server" \
+uvx --refresh --from "git+https://github.com/JC-000/serena@feature/ca65-external-adapter" \
     --with-editable "$(pwd)/packages/ca65-ls" serena --help
 ```
 

@@ -34,8 +34,16 @@ some projects would otherwise XPASS on the clean ones.
 | hook suite | `tests/hook/` | repo venv | `scripts/ca65_bash_nudge.py` counts, denies, resets and stays silent exactly as documented; malformed input never blocks a call |
 | unit tests | `packages/ca65-ls/tests/` | repo venv | parser, index, server handlers on the synthetic fixture |
 | corpus contract | `packages/ca65-ls/tests/corpus/` | repo venv | invariants on the real `c64-*` projects (below) |
-| through-Serena | `packages/ca65-ls/tests/serena/` | fork venv | ca65-ls started through SolidLSP exactly as Serena does: parity with the direct handlers, lifecycle, staleness |
-| fork e2e | `~/Documents/serena/test/solidlsp/ca65/` | fork venv | the shim boots and answers symbols/definition/references |
+| through-Serena | `packages/ca65-ls/tests/serena/` | fork venv | ca65-ls started through SolidLSP exactly as Serena does: parity with the direct handlers, lifecycle, staleness. Also holds `test_fork_e2e_parity.py`, the five end-to-end tests that used to live in the fork at `test/solidlsp/ca65/` |
+| entry-point discovery | inline in `scripts/gate.sh` | fork venv | Serena resolves the key `ca65` to `ca65_ls.serena_adapter.Ca65LanguageServer`, and the extension matcher classifies `.s`/`.asm`/`.inc` but not `.py` |
+
+The entry-point layer exists because the failure it catches is invisible to every
+pytest layer: those import `ca65_ls.serena_adapter` directly, so they stay green even
+when Serena itself cannot *find* the adapter. Discovery breaks whenever ca65-ls is
+installed with `--no-deps`, reinstalled without refreshing its entry-point metadata, or
+pruned out of the fork venv by a `uv sync`. The layer includes a negative control — an
+unknown key must raise rather than resolve — so that a green result means discovery
+really happened, not that `resolve()` returns a default for anything it is asked.
 
 ### Corpus contract
 

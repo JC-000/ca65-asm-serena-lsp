@@ -278,7 +278,7 @@ def test_pygls_protocol_chatter_is_not_logged_as_error():
     """F10 (shim side): stderr lines that pygls emits for its own protocol
     traffic are chatter even when the payload mentions `error`; the default
     classifier flagged them as ERROR. Real errors keep their level."""
-    from solidlsp.language_servers.ca65_language_server import Ca65LanguageServer
+    from ca65_ls.serena_adapter import Ca65LanguageServer
 
     classify = Ca65LanguageServer._determine_log_level
     chatter = 'INFO:pygls.protocol.json_rpc:Sending data: {"name": "ip65_error", "kind": 12}'
