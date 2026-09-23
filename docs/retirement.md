@@ -97,7 +97,12 @@ model at all: comments, directives, spec citations, build configuration.
 
 - This repository is archived read-only. `ca65-ls` 0.1.0 was never published to PyPI, and the
   `ca65-ls-v0.1.0` tag was never pushed.
-- The Serena fork branch `JC-000/serena@feature/ca65-external-adapter` (2 commits) and the old
-  `feature/ca65-language-server` branch stay on GitHub for archaeology.
+- The Serena fork `JC-000/serena` is archived read-only on GitHub. Its branches
+  `feature/ca65-external-adapter` (2 commits) and `feature/ca65-language-server` (the older 4-commit
+  shape) stay there for archaeology.
+- The machine is back on stock Serena: the MCP runs `uvx --from git+https://github.com/oraios/serena`,
+  the global hooks run `uvx --from serena-agent serena-hooks`, no `project.yml` lists `ca65`
+  (stock Serena would skip any project that did), and the global instruction to use the symbolic
+  tools on assembly is gone.
 - `docs/research/` (the tree-sitter-ca65 coverage matrix and `.dbg` format spec) and
   `ca65_ls/index/dbg_oracle.py` stand on their own and may be useful to other cc65 tooling.
