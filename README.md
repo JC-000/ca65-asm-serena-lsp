@@ -4,13 +4,20 @@ A language server for **CA65 assembly** (the [cc65](https://cc65.github.io/) too
 
 Gives Serena's symbolic tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `rename_symbol`, hover) real understanding of CA65 source: labels, procs, scopes, macros, structs, imports/exports, and includes.
 
-## Status
+> **Retired 2026-09-22 — archived, read-only.** The language server works. Coding agents doing real
+> CA65 work didn't use it, so it was not a value add. The symbolic-tool share stayed at about 3.6%
+> against a 2.8% baseline outside one project whose agent definitions required it, and a hook that
+> forced the switch mostly produced retried `grep`s. The evidence, costs and lessons are in
+> **[docs/retirement.md](docs/retirement.md)**. Everything below describes the project as it was
+> built and is kept for reference.
 
-**v1 complete and in daily use.** Validated end-to-end against a real C64 project of 247 sources / 8.6k symbols (cold reindex 1.3s, `.dbg` enrichment active), and regression-tested against ten real CA65 codebases by the [red/green gate](docs/red-green-gate.md).
+## Status (at retirement)
 
-Upstreaming into `oraios/serena` was declined ([oraios/serena#1504](https://github.com/oraios/serena/pull/1504), closed 2026-05-26 as too niche / third-party-dependency risk). That no longer requires a fork to carry the integration: upstream has since added support for out-of-tree language servers, so **`ca65-ls` now registers itself with a stock Serena** through a `solidlsp.language_server_registration` entry point, and the key `ca65` works in any project's `language_servers:` list with no patched Serena at all.
+**v1 complete, then retired.** Validated end-to-end against a real C64 project of 247 sources / 8.6k symbols (cold reindex 1.3s, `.dbg` enrichment active), and regression-tested against ten real CA65 codebases by the [red/green gate](docs/red-green-gate.md). `ca65-ls` 0.1.0 was never published to PyPI.
 
-The fork [`JC-000/serena@feature/ca65-external-adapter`](https://github.com/JC-000/serena/tree/feature/ca65-external-adapter) survives only for two small refinements — assembly file extensions in the symbolic-tools reminder hook, and the LSP `detail` field surfaced in symbol output — and is optional.
+Upstreaming into `oraios/serena` was declined ([oraios/serena#1504](https://github.com/oraios/serena/pull/1504), closed 2026-05-26 as too niche / third-party-dependency risk). That no longer requires a fork to carry the integration: upstream has since added support for out-of-tree language servers, so **`ca65-ls` registers itself with a stock Serena** through a `solidlsp.language_server_registration` entry point, and the key `ca65` works in any project's `language_servers:` list with no patched Serena at all.
+
+The fork [`JC-000/serena@feature/ca65-external-adapter`](https://github.com/JC-000/serena/tree/feature/ca65-external-adapter) carried two small refinements — assembly file extensions in the symbolic-tools reminder hook, and the LSP `detail` field surfaced in symbol output. It is left in place, unmaintained.
 
 ## Correctness
 
@@ -46,7 +53,9 @@ The corpus expectations are derived from the source text rather than hand-writte
 - `scripts/install_local_serena.sh` — points Claude Code's `serena` MCP entry at the fork + this ca65-ls source (project-scoped by default, `--global` optional).
 - `scripts/m4_smoke_test.py [PROJECT]` — exercises the LSP against a real CA65 project and prints a report.
 - `scripts/gate.sh [--quick]` — the red/green gate; run it before and after any change to the tools.
-- `scripts/ca65_bash_nudge.py` — an optional Claude Code hook that nudges assembly work off `grep`/`sed` and onto the symbolic tools (see below).
+- `scripts/ca65_bash_nudge.py` — a Claude Code hook that nudged assembly work off `grep`/`sed` and onto the symbolic tools (see below). Uninstalled at retirement; its audit is in `docs/retirement.md`.
+- `scripts/symbolic_usage_report.py` — measures symbolic vs raw tool use from Claude Code transcripts, subagents included.
+- `docs/retirement.md` — why the project was retired: adoption data, hook audit, costs, lessons.
 - `docs/red-green-gate.md` — the testing convention and the defect history.
 - `docs/research/` — grammar coverage matrix and `.dbg` format spec.
 
@@ -93,7 +102,9 @@ Serena ships Claude Code hooks (`serena-hooks activate|remind|auto-approve|clean
 
 The fork venv's install is editable, so hook changes there take effect immediately — but the hooks now depend on that venv existing.
 
-### The Bash nudge hook (optional)
+### The Bash nudge hook (retired)
+
+**Uninstalled 2026-09-22.** An audit of its 349 denies found about 42% were for searches the LSP cannot answer, and 79% were followed by another Bash call. See [docs/retirement.md](docs/retirement.md#evidence-the-nudge-hook). The original description follows.
 
 Serena's own reminder hook is blind to `Bash` on Claude Code: it matches the native `Read` and `Grep` tool *names*, while real CA65 sessions read source almost entirely through shell commands (one measured session ran 203 `Bash` calls and a single `Read`). `scripts/ca65_bash_nudge.py` is a `PreToolUse` hook that closes that gap without touching Serena: after three consecutive shell reads or greps of assembly files **inside a project that has the ca65 backend enabled**, it denies once and names the symbolic tool that would have answered.
 

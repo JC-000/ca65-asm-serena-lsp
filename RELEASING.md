@@ -1,5 +1,9 @@
 # Releasing `ca65-ls`
 
+> **Retired 2026-09-22 — there will be no release.** The project is archived (see
+> `docs/retirement.md`); the `ca65-ls-v0.1.0` tag was never pushed and nothing was
+> published to PyPI. The procedure below is kept for reference only.
+
 > **v0.1.0 status:** release content is frozen (CHANGELOG dated 2026-07-20);
 > the `ca65-ls-v0.1.0` tag is intentionally NOT pushed yet because the PyPI
 > trusted publisher is not registered — pushing it now would fail the publish

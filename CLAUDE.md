@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## RETIRED 2026-09-22 — read this first
+
+**This project is retired and the repository is archived.** The LSP worked, but agents doing real
+CA65 work didn't adopt it (≈3.6% symbolic share outside c64-wireguard, vs a 2.8% baseline), and the
+Bash nudge hook mostly produced retried `grep`s. See `docs/retirement.md` for the evidence. The nudge
+hook was removed from `~/.claude/settings.json` on 2026-09-22 (backup:
+`~/.claude/settings.json.pre-nudge-removal-20260922`). Everything below is historical: don't
+resume milestone work, rebases, or usage measurement unless the retirement is explicitly reversed.
+
 ## Canonical sources (read these first)
 
 The README is the public overview (refreshed 2026-07-20). Deeper project state lives in:
@@ -102,9 +111,9 @@ The fork's venv has both Serena and `ca65-ls` installed editable, so changes in 
 
 - `scripts/install_local_serena.sh` — swaps Claude Code's MCP config to use the fork + ca65-ls (with backup + revert instructions). User runs this once, then restarts Claude Code.
 - `scripts/m4_smoke_test.py [PROJECT_PATH]` — exercises the LSP against any CA65 project (default: c64-https) and prints a Markdown-friendly report. Auto-bootstraps into the Serena fork's venv. Use for collecting M4 bug reports.
-- `scripts/symbolic_usage_report.py [--since 24h] [--projects FILE]` — measures how often real CA65 work uses the symbolic tools versus raw reads/edits. Reads Claude Code's own transcripts under `~/.claude/projects/*/*.jsonl`, which record *every* tool call (native `Read`/`Grep`/`Edit` included) with a timestamp and cwd. **Serena's web dashboard cannot answer this**: `/get_tool_stats` counts only Serena MCP calls and resets whenever the MCP process restarts, so it under-reports by construction. Windows are arbitrary and the transcripts are durable, so the script also reconstructs past periods retroactively.
+- `scripts/symbolic_usage_report.py [--since 24h] [--projects FILE]` — measures how often real CA65 work uses the symbolic tools versus raw reads/edits. Reads Claude Code's own transcripts under `~/.claude/projects/` recursively (subagents live in `<session>/subagents/*.jsonl` and carry most of the traffic; the script missed them until 2026-09-22), which record *every* tool call (native `Read`/`Grep`/`Edit` included) with a timestamp and cwd. **Serena's web dashboard cannot answer this**: `/get_tool_stats` counts only Serena MCP calls and resets whenever the MCP process restarts, so it under-reports by construction. Windows are arbitrary, so the script can reconstruct past periods retroactively, but only within `cleanupPeriodDays` (default 30): Claude Code deletes older transcripts.
 
-### The Bash nudge hook (installed 2026-09-01)
+### The Bash nudge hook (installed 2026-09-01, removed 2026-09-22)
 
 - `scripts/ca65_bash_nudge.py` — a PreToolUse hook wired into `~/.claude/settings.json` with an empty matcher (it must see both `Bash` calls and `mcp__serena__` symbolic calls). Denies the 3rd consecutive Bash read/grep of an assembly file **inside a project whose `.serena/project.yml` enables ca65**, naming the symbolic tool that would have answered the query. A deny resets the counter so the next retry proceeds; any symbolic call also resets it; at most one nudge per 2 minutes.
 
@@ -124,6 +133,8 @@ rm -rf ~/.serena/ca65-metrics ~/Library/LaunchAgents/com.jc000.ca65-symbolic-usa
 ```
 
 ## Milestone status
+
+**Final: retired 2026-09-22 — see `docs/retirement.md`.**
 
 **All five milestones done. Upstream PR [oraios/serena#1504](https://github.com/oraios/serena/pull/1504) was REJECTED on 2026-05-26** — closed by maintainer without code review, citing niche audience, the unverified `tree-sitter-ca65` dependency (supply-chain risk), and maintenance overhead. A scope/policy decision, not a quality one. **The fork is now the long-term home**; ongoing work is periodic rebases of `feature/ca65-language-server` onto upstream main, and `scripts/install_local_serena.sh` is the permanent install path.
 
