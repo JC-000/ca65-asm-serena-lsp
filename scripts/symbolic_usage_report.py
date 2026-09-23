@@ -8,9 +8,13 @@ Motivation
 Serena's web dashboard (`/get_tool_stats`) counts only Serena MCP calls and
 resets every time the MCP process restarts, so it structurally cannot answer
 "are the ca65 symbolic tools actually being used?".  Claude Code's own
-transcripts under ``~/.claude/projects/<slug>/*.jsonl`` record *every* tool
+transcripts under ``~/.claude/projects/<slug>/`` record *every* tool
 call -- native Read/Grep/Edit included -- with a timestamp and cwd, so they
-give the complete picture and can be replayed retroactively.
+give the complete picture and can be replayed retroactively. Subagent
+transcripts live one level deeper, in ``<session>/subagents/*.jsonl``, and
+carry most of the traffic, hence the recursive glob. Claude Code deletes
+transcripts after ``cleanupPeriodDays`` (default 30), so "retroactively"
+only reaches back that far.
 
 This reports, for CA65 projects only, the share of assembly-file operations
 that went through a symbolic tool rather than a raw read/grep/edit.
@@ -179,7 +183,7 @@ def collect(
     tool_detail: collections.Counter = collections.Counter()
     sessions: set[str] = set()
 
-    for transcript in TRANSCRIPT_ROOT.glob("*/*.jsonl"):
+    for transcript in TRANSCRIPT_ROOT.rglob("*.jsonl"):
         # Cheap pre-filter: skip files untouched during the window.
         try:
             if dt.datetime.fromtimestamp(transcript.stat().st_mtime, dt.timezone.utc) < since:

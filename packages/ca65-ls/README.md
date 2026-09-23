@@ -4,9 +4,11 @@ A language server for **CA65** assembly (the macro assembler from the [cc65](htt
 
 Designed to plug into [Serena MCP](https://github.com/oraios/serena) so its symbolic agent tools (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `rename_symbol`) work against CA65 codebases.
 
+> **Retired 2026-09-22.** Works, but agents doing real CA65 work didn't use it enough to justify the upkeep. See [docs/retirement.md](https://github.com/JC-000/ca65-asm-serena-lsp/blob/main/docs/retirement.md). Never published to PyPI; the repository is archived.
+
 ## Status
 
-**v0.1.0.** Feature-complete for symbol navigation: document symbols, go to definition, scope-aware find-references and rename, hover, and workspace symbol search — validated against a real ~220-file C64 project. See the [repository](https://github.com/JC-000/ca65-asm-serena-lsp) and `CHANGELOG.md` for details.
+**v0.1.0 (unreleased).** Feature-complete for symbol navigation: document symbols, go to definition, scope-aware find-references and rename, hover, and workspace symbol search — validated against a real ~220-file C64 project. See the [repository](https://github.com/JC-000/ca65-asm-serena-lsp) and `CHANGELOG.md` for details.
 
 ## Architecture (in brief)
 

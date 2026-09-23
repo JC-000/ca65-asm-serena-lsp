@@ -1,5 +1,11 @@
 # Changelog
 
+## Retired — 2026-09-22
+
+Archived without a PyPI release. Agents doing real CA65 work didn't adopt it enough to
+justify the upkeep; see `docs/retirement.md` in the repository. 0.1.0 below was
+never published.
+
 ## 0.1.0 — 2026-07-20
 
 First release.
